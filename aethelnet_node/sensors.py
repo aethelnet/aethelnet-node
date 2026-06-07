@@ -219,7 +219,7 @@ class SensorArray:
 
     def perceive_cosmic_pulse(self) -> str:
         """
-        Fetches live cosmic and planetary telemetry from swpc.noaa.gov and earthquake.usgs.gov.
+        Fetches live cosmic and planetary telemetry from NOAA SWPC, USGS, Open-Meteo, and NDBC.
         """
         results = []
         # 1. Earthquakes
@@ -252,6 +252,57 @@ class SensorArray:
                 latest = json.loads(res.read().decode('utf-8'))[-1]
                 kp = float(latest.get("kp_index", 0.0))
                 results.append(f"Geomagnetism: Planetary Kp-index is {kp:.1f}")
+        except Exception:
+            pass
+
+        # 4. Kyoto Dst Index (Magnetospheric Stress)
+        try:
+            req = urllib.request.Request("https://services.swpc.noaa.gov/products/kyoto-dst.json", headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                latest = json.loads(res.read().decode('utf-8'))[-1]
+                dst = float(latest[1])
+                results.append(f"Magnetospheric Stress: Dst Index is {dst:.1f} nT")
+        except Exception:
+            pass
+
+        # 5. Differential Alpha Particle Flux
+        try:
+            req = urllib.request.Request("https://services.swpc.noaa.gov/json/goes/primary/differential-alphas-6-hour.json", headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                channel_data = [d for d in data if d.get("energy") == "3790-6780 keV"]
+                if channel_data:
+                    flux = float(channel_data[-1].get("flux", 1.0))
+                    results.append(f"Space Weather: GOES Primary Alpha flux (3790-6780 keV) is {flux:.4f}")
+        except Exception:
+            pass
+
+        # 6. Global Jetstream & Winds (Open-Meteo)
+        try:
+            url = "https://api.open-meteo.com/en/v1/forecast?latitude=51.5074&longitude=-0.1278&current=surface_pressure,wind_speed_10m,wind_speed_800hpa&wind_speed_unit=ms"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                current = json.loads(res.read().decode('utf-8')).get("current", {})
+                results.append(f"Atmospheric Dynamics: Surface pressure {current.get('surface_pressure', 1013):.1f} hPa, Wind Speed (10m) {current.get('wind_speed_10m', 0):.1f} m/s, Jetstream (800hPa) {current.get('wind_speed_800hpa', 0):.1f} m/s")
+        except Exception:
+            pass
+
+        # 7. NOAA Sentinel DART Buoys (Oceanic Pressure)
+        try:
+            buoys = ["21413", "44402"]
+            buoy_pressures = []
+            for bid in buoys:
+                url = f"https://www.ndbc.noaa.gov/data/realtime2/{bid}.txt"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Aethelnet/1.0'})
+                with urllib.request.urlopen(req, timeout=3.0) as res:
+                    lines = res.read().decode('utf-8').split("\n")
+                    if len(lines) > 2:
+                        data = lines[2].split()
+                        if len(data) > 12:
+                            buoy_pressures.append(float(data[12]))
+            if buoy_pressures:
+                avg_pressure = sum(buoy_pressures) / len(buoy_pressures)
+                results.append(f"Oceanographic Telemetry: Sentinel DART Buoy pressure average {avg_pressure:.2f} m")
         except Exception:
             pass
 
