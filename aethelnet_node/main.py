@@ -496,9 +496,13 @@ async def autonomous_curiosity_scouter():
                 logger.info(f"[Curiosity] Autonomous scouter triggered for highly active concept: '{query_term}'")
                 
                 from aethelnet_node.scouter import scout_arxiv_optimizations
-                loop = asyncio.get_event_loop()
-                papers = await loop.run_in_executor(None, scout_arxiv_optimizations, query_term, HIDDEN_DIM)
+                from aethelnet_node.sensors import SensorArray
+                sensors = SensorArray()
                 
+                loop = asyncio.get_event_loop()
+                
+                # 1. arXiv Query
+                papers = await loop.run_in_executor(None, scout_arxiv_optimizations, query_term, HIDDEN_DIM)
                 for paper in papers:
                     p_id = paper["title"]
                     p_emb = text_to_embedding(p_id)
@@ -511,10 +515,113 @@ async def autonomous_curiosity_scouter():
                     save_edge(query_term, p_id, 0.8)
                     logger.info(f"[Curiosity] Discovered and linked context paper: {p_id}")
                     
+                # 2. Wikipedia Query
+                wiki_data = await loop.run_in_executor(None, sensors.query_wikipedia, query_term)
+                if wiki_data and wiki_data.get("summary"):
+                    w_id = f"Wiki_{wiki_data['title']}"
+                    w_emb = text_to_embedding(w_id)
+                    graph_instance.add_node(w_id, w_emb)
+                    save_node(
+                        w_id, w_emb, 0.0, 0.95, 0.0, False, False,
+                        text_content=f"{wiki_data['summary']}\n\nURL: {wiki_data['url']}",
+                        source_tag="sensor_wikipedia"
+                    )
+                    graph_instance.nx_graph.add_edge(query_term, w_id, weight=0.9)
+                    save_edge(query_term, w_id, 0.9)
+                    logger.info(f"[Curiosity] Resolved Wikipedia grounding node: {w_id}")
+                    
+                # 3. GitHub Query
+                github_repos = await loop.run_in_executor(None, sensors.query_github, query_term)
+                for repo in github_repos:
+                    r_id = f"GitHub_{repo['name']}"
+                    r_emb = text_to_embedding(r_id)
+                    graph_instance.add_node(r_id, r_emb)
+                    save_node(
+                        r_id, r_emb, 0.0, 0.85, 0.0, False, False,
+                        text_content=f"{repo['description']}\n\nStars: {repo['stars']}\nURL: {repo['url']}",
+                        source_tag="sensor_github"
+                    )
+                    graph_instance.nx_graph.add_edge(query_term, r_id, weight=0.75)
+                    save_edge(query_term, r_id, 0.75)
+                    logger.info(f"[Curiosity] Discovered GitHub repository: {r_id}")
+                    
         except Exception as e:
             logger.error(f"[Curiosity] Loop execution failed: {e}")
             
         await asyncio.sleep(60)
+
+async def workspace_file_watcher():
+    watch_dir = "/var/home/nhrlyn/aethelnet-node/scratch"
+    os.makedirs(watch_dir, exist_ok=True)
+    logger.info(f"[Workspace Watcher] Watching directory: {watch_dir} for new inputs...")
+    
+    seen_files = {}
+    while True:
+        try:
+            for filename in os.listdir(watch_dir):
+                file_path = os.path.join(watch_dir, filename)
+                if not os.path.isfile(file_path) or filename.startswith("."):
+                    continue
+                    
+                mtime = os.path.getmtime(file_path)
+                if file_path not in seen_files or seen_files[file_path] < mtime:
+                    seen_files[file_path] = mtime
+                    logger.info(f"[Workspace Watcher] Detected new/modified file: {filename}")
+                    
+                    ext = os.path.splitext(filename)[1].lower()
+                    from aethelnet_node.sensors import SensorArray
+                    sensors = SensorArray()
+                    
+                    chunks = []
+                    if ext == ".pdf":
+                        chunks = sensors.parse_pdf(file_path)
+                    elif ext in [".txt", ".md"]:
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                text = f.read()
+                            chunks = [{"type": "text", "content": text, "metadata": file_path}]
+                        except Exception as e:
+                            logger.error(f"[Workspace Watcher] Read failed: {e}")
+                            
+                    if chunks and not (len(chunks) == 1 and chunks[0].get("type") == "error"):
+                        doc_id = filename
+                        doc_emb = text_to_embedding(doc_id)
+                        graph_instance.add_node(doc_id, doc_emb)
+                        save_node(
+                            doc_id, doc_emb, 0.0, 0.9, 0.0, False, False, 
+                            text_content=f"Document perceived by Workspace Watcher. Path: {file_path}", 
+                            source_tag="sensor_watcher"
+                        )
+                        
+                        keywords_found = []
+                        for idx, chunk in enumerate(chunks):
+                            chunk_id = f"Chunk_{doc_id}_{idx}"
+                            chunk_emb = text_to_embedding(chunk["content"])
+                            
+                            graph_instance.add_node(chunk_id, chunk_emb)
+                            save_node(
+                                chunk_id, chunk_emb, 0.0, 0.85, 0.0, False, False, 
+                                text_content=chunk["content"], source_tag=f"sensor_{chunk['type']}"
+                            )
+                            graph_instance.nx_graph.add_edge(doc_id, chunk_id, weight=1.0)
+                            save_edge(doc_id, chunk_id, 1.0)
+                            
+                            if chunk["type"] == "text":
+                                found_kws = sensors.extract_keywords(chunk["content"])
+                                keywords_found.extend(found_kws)
+                                
+                        unique_kws = list(set(keywords_found))
+                        logger.info(f"[Workspace Watcher] Perceived {len(chunks)} chunks, keywords: {unique_kws}")
+                        
+                        for kw in unique_kws:
+                            if kw in graph_instance.nodes:
+                                graph_instance.nx_graph.add_edge(doc_id, kw, weight=0.75)
+                                save_edge(doc_id, kw, 0.75)
+                                logger.info(f"[Workspace Watcher] Dynamic link established: {doc_id} <-> {kw}")
+        except Exception as e:
+            logger.error(f"[Workspace Watcher] Loop failed: {e}")
+            
+        await asyncio.sleep(15)
 
 # --- STARTUP EVENT ---
 @app.on_event("startup")
@@ -599,4 +706,5 @@ async def startup_event():
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
     asyncio.create_task(register_with_all_known_peers())
+    asyncio.create_task(workspace_file_watcher())
     logger.info("[Aethelnet Node] Startup actions completed.")

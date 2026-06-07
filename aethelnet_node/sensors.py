@@ -143,3 +143,52 @@ class SensorArray:
             if kw in lower_text:
                 found.append(kw)
         return found
+
+    def query_wikipedia(self, query: str) -> Dict[str, Any]:
+        """
+        Fetches summary definition of a mathematical/scientific term from Wikipedia REST API.
+        """
+        import urllib.parse
+        clean_query = query.replace(" ", "_").strip()
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(clean_query)}"
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'AethelnetSensors/1.0 (contact: nika.hrlyn@gmail.com)'}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                return {
+                    "title": data.get("title", query),
+                    "summary": data.get("extract", ""),
+                    "url": data.get("content_urls", {}).get("desktop", {}).get("page", "")
+                }
+        except Exception as e:
+            logger.debug(f"[Wikipedia Sensor] Failed to query '{query}': {e}")
+            return {}
+
+    def query_github(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Searches GitHub for top open source repositories related to the active concept.
+        """
+        import urllib.parse
+        url = f"https://api.github.com/search/repositories?q={urllib.parse.quote(query)}&sort=stars&order=desc"
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'AethelnetSensors/1.0 (contact: nika.hrlyn@gmail.com)'}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                repos = []
+                for item in data.get("items", [])[:3]:  # Top 3 repos
+                    repos.append({
+                        "name": item.get("full_name"),
+                        "description": item.get("description", ""),
+                        "url": item.get("html_url"),
+                        "stars": item.get("stargazers_count", 0)
+                    })
+                return repos
+        except Exception as e:
+            logger.debug(f"[GitHub Sensor] Failed to query '{query}': {e}")
+            return []
