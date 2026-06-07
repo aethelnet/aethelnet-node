@@ -407,6 +407,59 @@ async def get_node_details(node_id: str):
         "is_grounded": metrics.get("is_grounded", False)
     }
 
+# Track scouted queries to avoid redundant API requests
+SCOUTED_TERMS = set()
+
+async def autonomous_curiosity_scouter():
+    await asyncio.sleep(45) # Settling time
+    while True:
+        try:
+            candidates = []
+            for nid in list(graph_instance.nodes.keys()):
+                orig_id = graph_instance._original_id(nid)
+                if orig_id in REALITY_ANCHORS or "gossip" in orig_id or orig_id in SCOUTED_TERMS:
+                    continue
+                    
+                state_tensor = graph_instance.nodes[nid]
+                mean_act = float(state_tensor.mean().detach().cpu())
+                
+                # Check degree in networkx graph
+                degree = graph_instance.nx_graph.degree(orig_id) if orig_id in graph_instance.nx_graph else 0
+                
+                # Highly active but isolated concepts qualify as "curious candidates"
+                if abs(mean_act) > 0.4 and degree <= 2:
+                    text = get_node_text(orig_id)
+                    if text and len(orig_id) > 3:
+                        candidates.append((orig_id, abs(mean_act)))
+                        
+            if candidates:
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                query_term = candidates[0][0]
+                SCOUTED_TERMS.add(query_term)
+                
+                logger.info(f"[Curiosity] Autonomous scouter triggered for highly active concept: '{query_term}'")
+                
+                from aethelnet_node.scouter import scout_arxiv_optimizations
+                loop = asyncio.get_event_loop()
+                papers = await loop.run_in_executor(None, scout_arxiv_optimizations, query_term, HIDDEN_DIM)
+                
+                for paper in papers:
+                    p_id = paper["title"]
+                    p_emb = text_to_embedding(p_id)
+                    graph_instance.add_node(p_id, p_emb)
+                    save_node(
+                        p_id, p_emb, 0.0, 0.9, 0.0, False, False, 
+                        text_content=paper["summary"], source_tag="autonomous_curiosity"
+                    )
+                    graph_instance.nx_graph.add_edge(query_term, p_id, weight=0.8)
+                    save_edge(query_term, p_id, 0.8)
+                    logger.info(f"[Curiosity] Discovered and linked context paper: {p_id}")
+                    
+        except Exception as e:
+            logger.error(f"[Curiosity] Loop execution failed: {e}")
+            
+        await asyncio.sleep(60)
+
 # --- STARTUP EVENT ---
 @app.on_event("startup")
 async def startup_event():
@@ -466,6 +519,7 @@ async def startup_event():
             await asyncio.sleep(10)
             
     asyncio.create_task(continuous_ode_loop())
+    asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
     logger.info("[Aethelnet Node] Startup actions completed.")
