@@ -105,6 +105,85 @@ def load_all_from_db():
 
 # --- API ENDPOINTS ---
 
+class FileIngestRequest(BaseModel):
+    file_path: str
+
+@app.post("/api/ingest/file")
+async def ingest_file(payload: FileIngestRequest, background_tasks: BackgroundTasks):
+    if not os.path.exists(payload.file_path):
+        raise HTTPException(status_code=400, detail="File path does not exist.")
+        
+    ext = os.path.splitext(payload.file_path)[1].lower()
+    from aethelnet_node.sensors import SensorArray
+    from aethelnet_node.scouter import scout_arxiv_optimizations
+    
+    sensors = SensorArray()
+    if ext == ".pdf":
+        chunks = sensors.parse_pdf(payload.file_path)
+    elif ext in [".obj", ".stl"]:
+        chunks = sensors.perceive_spatial_geometry(payload.file_path)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format.")
+        
+    if not chunks or (len(chunks) == 1 and chunks[0].get("type") == "error"):
+        raise HTTPException(status_code=500, detail=chunks[0].get("content", "Failed to parse file."))
+        
+    doc_id = os.path.basename(payload.file_path)
+    doc_emb = text_to_embedding(doc_id)
+    graph_instance.add_node(doc_id, doc_emb)
+    save_node(
+        doc_id, doc_emb, 0.0, 0.9, 0.0, False, False, 
+        text_content=f"Document perceived. Path: {payload.file_path}", 
+        source_tag="sensor_document"
+    )
+    
+    keywords_found = []
+    for idx, chunk in enumerate(chunks):
+        chunk_id = f"Chunk_{doc_id}_{idx}"
+        chunk_emb = text_to_embedding(chunk["content"])
+        
+        graph_instance.add_node(chunk_id, chunk_emb)
+        save_node(
+            chunk_id, chunk_emb, 0.0, 0.85, 0.0, False, False, 
+            text_content=chunk["content"], source_tag=f"sensor_{chunk['type']}"
+        )
+        graph_instance.nx_graph.add_edge(doc_id, chunk_id, weight=1.0)
+        save_edge(doc_id, chunk_id, 1.0)
+        
+        if chunk["type"] == "text":
+            found_kws = sensors.extract_keywords(chunk["content"])
+            keywords_found.extend(found_kws)
+            
+    unique_kws = list(set(keywords_found))
+    logger.info(f"[Sensors] Found keywords for scouting: {unique_kws}")
+    
+    def run_scouter_bg():
+        for kw in unique_kws:
+            try:
+                papers = scout_arxiv_optimizations(query=kw, hidden_dim=HIDDEN_DIM)
+                for paper in papers:
+                    p_id = paper["title"]
+                    p_emb = text_to_embedding(p_id)
+                    graph_instance.add_node(p_id, p_emb)
+                    save_node(
+                        p_id, p_emb, 0.0, 0.9, 0.0, False, False, 
+                        text_content=paper["summary"], source_tag="arxiv_scouter"
+                    )
+                    graph_instance.nx_graph.add_edge(doc_id, p_id, weight=0.8)
+                    save_edge(doc_id, p_id, 0.8)
+                    logger.info(f"[Scouter] Discovered and linked paper: {p_id}")
+            except Exception as e:
+                logger.error(f"[Scouter] Background search failed for {kw}: {e}")
+                
+    background_tasks.add_task(run_scouter_bg)
+    
+    return {
+        "status": "ingested",
+        "document_node": doc_id,
+        "chunks_count": len(chunks),
+        "keywords_detected": unique_kws
+    }
+
 @app.get("/")
 def health():
     return {"status": "operational", "node": socket.gethostname(), "peers_configured": len(KNOWN_PEERS)}
