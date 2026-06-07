@@ -34,6 +34,11 @@ app.add_middleware(
 HIDDEN_DIM = 768
 init_db()
 
+# Cosmic constants for initial confidence
+DEFAULT_CONFIDENCE = (math.sqrt(5) - 1) / 2  # Reciprocal of Golden Ratio (~0.6180339887)
+KNOWLEDGE_CONFIDENCE = math.pi - 2.3         # Pi-derived starting confidence (~0.84159265)
+DOCUMENT_CONFIDENCE = math.sin(1.1)          # Angular sine of the path (~0.89120736)
+
 # Global GNN and metrics state
 graph_instance = LiquidGraph(hidden_dim=HIDDEN_DIM, resonance_threshold=0.6, decay_rate=0.05)
 node_metrics: Dict[str, Dict[str, Any]] = {}
@@ -75,7 +80,7 @@ class EvolveTextRequest(BaseModel):
 class UniversalIngest(BaseModel):
     bot_name: str
     observation: str
-    confidence: Optional[float] = 0.8
+    confidence: Optional[float] = DEFAULT_CONFIDENCE
     context_tags: Optional[List[str]] = []
 
 def text_to_embedding(text: str, dim: int = HIDDEN_DIM) -> torch.Tensor:
@@ -147,7 +152,7 @@ async def ingest_file(payload: FileIngestRequest, background_tasks: BackgroundTa
     doc_emb = text_to_embedding(doc_id)
     graph_instance.add_node(doc_id, doc_emb)
     save_node(
-        doc_id, doc_emb, 0.0, 0.9, 0.0, False, False, 
+        doc_id, doc_emb, 0.0, DOCUMENT_CONFIDENCE, 0.0, False, False, 
         text_content=f"Document perceived. Path: {payload.file_path}", 
         source_tag="sensor_document"
     )
@@ -159,7 +164,7 @@ async def ingest_file(payload: FileIngestRequest, background_tasks: BackgroundTa
         
         graph_instance.add_node(chunk_id, chunk_emb)
         save_node(
-            chunk_id, chunk_emb, 0.0, 0.85, 0.0, False, False, 
+            chunk_id, chunk_emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False, 
             text_content=chunk["content"], source_tag=f"sensor_{chunk['type']}"
         )
         graph_instance.nx_graph.add_edge(doc_id, chunk_id, weight=1.0)
@@ -258,7 +263,7 @@ async def receive_peer_sync(payload: PeerSyncPayload):
         emb = text_to_embedding(node_data["id"])
         graph_instance.add_node(node_data["id"], emb)
         save_node(
-            node_data["id"], emb, 0.0, node_data.get("confidence", 0.8), 0.0, 
+            node_data["id"], emb, 0.0, node_data.get("confidence", DEFAULT_CONFIDENCE), 0.0, 
             False, False, text_content=f"Imported from {payload.peer_id}", 
             source_tag=f"p2p_{payload.peer_id}"
         )
@@ -284,7 +289,7 @@ async def create_node_route(payload: NodeCreate):
     emb = text_to_embedding(payload.text_content)
     graph_instance.add_node(payload.id, emb, connections=payload.connections)
     save_node(
-        payload.id, emb, 0.0, 0.8, 0.0, False, False, 
+        payload.id, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, 
         text_content=payload.text_content, source_tag=payload.source_tag,
         is_quarantined=payload.is_quarantined
     )
@@ -369,13 +374,13 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
         
     graph_instance.add_node(temp_id, emb, connections=[graph_instance._original_id(n) for n in top_3_nodes])
     node_metrics[temp_id] = {
-        "confidence": 0.8,
+        "confidence": DEFAULT_CONFIDENCE,
         "plateau_factor": 0.0,
         "is_grounded": False,
         "help_chain": False,
         "source_tag": "internal"
     }
-    save_node(temp_id, emb, 0.0, 0.8, 0.0, False, False, text_content=enriched_text)
+    save_node(temp_id, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, text_content=enriched_text)
     
     # Measure initial alignment
     nodes_list = list(graph_instance.nodes.keys())
@@ -464,7 +469,7 @@ async def get_graph():
             mean_activation = 1.0 if mean_activation > 0 else -1.0
         orig_id = graph_instance._original_id(nid)
         metrics = node_metrics.setdefault(nid, {
-            "confidence": 0.8, "plateau_factor": 0.0, 
+            "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0, 
             "is_grounded": orig_id in REALITY_ANCHORS, 
             "help_chain": False, "source_tag": "internal", "is_quarantined": False
         })
@@ -568,7 +573,7 @@ async def hunt_for_peers():
                             emb = text_to_embedding(nid)
                             graph_instance.add_node(nid, emb)
                             save_node(
-                                nid, emb, 0.0, node.get("confidence", 0.8), 0.0,
+                                nid, emb, 0.0, node.get("confidence", DEFAULT_CONFIDENCE), 0.0,
                                 False, False, text_content=f"Harvested from peer {peer}",
                                 source_tag=f"p2p_gossip_{peer}"
                             )
@@ -620,7 +625,7 @@ async def gossip_truth_to_peers():
             payload = {
                 "bot_name": f"lgnn_gossip_{hostname}",
                 "observation": f"[{grain_of_truth_id}] {truth_text}",
-                "confidence": node_metrics[grain_of_truth_id].get("confidence", 0.8),
+                "confidence": node_metrics[grain_of_truth_id].get("confidence", DEFAULT_CONFIDENCE),
                 "context_tags": ["p2p_gossip"]
             }
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -640,7 +645,7 @@ async def get_node_details(node_id: str):
     return {
         "id": node_id,
         "text_content": text,
-        "confidence": metrics.get("confidence", 0.8),
+        "confidence": metrics.get("confidence", DEFAULT_CONFIDENCE),
         "source_tag": metrics.get("source_tag", "internal"),
         "is_grounded": metrics.get("is_grounded", False)
     }
@@ -719,7 +724,7 @@ async def autonomous_curiosity_scouter():
                     r_emb = text_to_embedding(r_id)
                     graph_instance.add_node(r_id, r_emb)
                     save_node(
-                        r_id, r_emb, 0.0, 0.85, 0.0, False, False,
+                        r_id, r_emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False,
                         text_content=f"{repo['description']}\n\nStars: {repo['stars']}\nURL: {repo['url']}",
                         source_tag="sensor_github"
                     )
@@ -734,7 +739,7 @@ async def autonomous_curiosity_scouter():
                     b_emb = text_to_embedding(b_id)
                     graph_instance.add_node(b_id, b_emb)
                     save_node(
-                        b_id, b_emb, 0.0, 0.85, 0.0, False, False,
+                        b_id, b_emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False,
                         text_content=f"Title: {book['title']}\nAuthor: {book['author']}\nPublished: {book['first_publish_year']}\nSubjects: {book['subject']}",
                         source_tag="sensor_openlibrary"
                     )
@@ -799,7 +804,7 @@ async def workspace_file_watcher():
                             
                             graph_instance.add_node(chunk_id, chunk_emb)
                             save_node(
-                                chunk_id, chunk_emb, 0.0, 0.85, 0.0, False, False, 
+                                chunk_id, chunk_emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False, 
                                 text_content=chunk["content"], source_tag=f"sensor_{chunk['type']}"
                             )
                             graph_instance.nx_graph.add_edge(doc_id, chunk_id, weight=1.0)
@@ -838,12 +843,12 @@ async def startup_event():
                     
                     orig_id = graph_instance._original_id(nid)
                     metrics = node_metrics.setdefault(nid, {
-                        "confidence": 0.8, "plateau_factor": 0.0,
+                        "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
                         "is_grounded": orig_id in REALITY_ANCHORS,
                         "help_chain": False, "source_tag": "internal", "is_quarantined": False
                     })
                     
-                    confidence = metrics.get("confidence", 0.8)
+                    confidence = metrics.get("confidence", DEFAULT_CONFIDENCE)
                     
                     # Reality Anchors are grounded (permanent 0.95 confidence)
                     if orig_id in REALITY_ANCHORS:
@@ -914,7 +919,7 @@ async def startup_event():
                     node_id = f"Obs_cosmic_telemetry_{int(time.time())}"
                     graph_instance.add_node(node_id, emb)
                     save_node(
-                        node_id, emb, 0.0, 0.85, 0.0, False, False, 
+                        node_id, emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False, 
                         text_content=pulse, source_tag="sensor_cosmic"
                     )
             except Exception as e:

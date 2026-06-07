@@ -26,7 +26,7 @@ def init_db():
         embedding BLOB NOT NULL,
         text_content TEXT DEFAULT '',
         mean_activation REAL DEFAULT 0.0,
-        confidence REAL DEFAULT 0.8,
+        confidence REAL DEFAULT 0.6180339887,
         plateau_factor REAL DEFAULT 0.0,
         is_grounded INTEGER DEFAULT 0,
         help_chain INTEGER DEFAULT 0,

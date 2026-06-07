@@ -2,10 +2,12 @@ import asyncio
 import httpx
 import logging
 import socket
+import math
 from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 
+DEFAULT_CONFIDENCE = (math.sqrt(5) - 1) / 2  # ~0.6180339887
 logger = logging.getLogger("LGNN.P2P")
 
 p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
@@ -76,7 +78,7 @@ async def receive_peer_sync(payload: PeerSyncPayload):
         # This guarantees backward compatibility and enables quarantine if the node proves toxic.
         secure_node = NodeCreate(
             id=node_data["id"],
-            text_content=f"Imported from {payload.peer_id}. Original confidence: {node_data.get('confidence', 0.8)}",
+            text_content=f"Imported from {payload.peer_id}. Original confidence: {node_data.get('confidence', DEFAULT_CONFIDENCE)}",
             connections=[], # We let the local ODE solver form its own bridges
             source_tag=f"p2p_{payload.peer_id}",
             is_quarantined=False # Start innocent, let the solver quarantine if necessary
@@ -162,7 +164,7 @@ async def gossip_truth_to_peers():
             payload = {
                 "bot_name": f"lgnn_gossip_{hostname}",
                 "observation": f"[{grain_of_truth_id}] {truth_text}",
-                "confidence": node_metrics[grain_of_truth_id].get("confidence", 0.8),
+                "confidence": node_metrics[grain_of_truth_id].get("confidence", DEFAULT_CONFIDENCE),
                 "context_tags": ["p2p_gossip", "universal_truth"]
             }
             
