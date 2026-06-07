@@ -144,6 +144,30 @@ class SensorArray:
                 found.append(kw)
         return found
 
+    def perceive_image(self, file_path: str) -> List[Dict[str, Any]]:
+        """
+        Uses Ollama Vision model to describe standalone images (PNG, JPG, etc.)
+        """
+        try:
+            with open(file_path, "rb") as f:
+                image_bytes = f.read()
+            b64_img = base64.b64encode(image_bytes).decode('utf-8')
+            logger.info(f"[Sensors] Perceiving standalone image: {os.path.basename(file_path)}")
+            desc = self._call_ollama(
+                model=self.vision_model,
+                prompt="Describe this image in detail. Identify any text, objects, mathematical diagrams, or charts.",
+                images=[b64_img]
+            )
+            if "[Sensor Error]" in desc or not desc.strip():
+                desc = f"Visual element perceived from {os.path.basename(file_path)}."
+            return [{
+                "type": "visual_description",
+                "content": desc,
+                "metadata": file_path
+            }]
+        except Exception as e:
+            return [{"type": "error", "content": f"Failed to perceive image: {e}"}]
+
     def query_wikipedia(self, query: str) -> Dict[str, Any]:
         """
         Fetches summary definition of a mathematical/scientific term from Wikipedia REST API.

@@ -575,6 +575,8 @@ async def workspace_file_watcher():
                     chunks = []
                     if ext == ".pdf":
                         chunks = sensors.parse_pdf(file_path)
+                    elif ext in [".png", ".jpg", ".jpeg"]:
+                        chunks = sensors.perceive_image(file_path)
                     elif ext in [".txt", ".md"]:
                         try:
                             with open(file_path, "r", encoding="utf-8") as f:
