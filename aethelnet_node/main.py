@@ -283,6 +283,26 @@ async def get_graph():
         
     return {"nodes": nodes_data, "links": links_data}
 
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("[WS] Client connected.")
+    try:
+        while True:
+            nodes_count = len(graph_instance.nodes)
+            edges_count = len(graph_instance.nx_graph.edges)
+            await websocket.send_json({
+                "type": "telemetry",
+                "nodes": nodes_count,
+                "bridges": edges_count,
+                "state": "Active"
+            })
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        logger.info("[WS] Client disconnected.")
+
 # --- P2P BACKGROUND LOOPS ---
 
 async def hunt_for_peers():
