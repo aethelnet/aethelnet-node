@@ -312,7 +312,7 @@ class SensorArray:
 
     def query_open_library(self, query: str) -> List[Dict[str, Any]]:
         """
-        Searches Open Library for books related to the concept.
+        Searches Open Library for books and pulls descriptions/summaries.
         """
         import urllib.parse
         url = f"https://openlibrary.org/search.json?q={urllib.parse.quote(query)}"
@@ -325,11 +325,37 @@ class SensorArray:
                 data = json.loads(res.read().decode('utf-8'))
                 books = []
                 for doc in data.get("docs", [])[:3]:  # Top 3 books
+                    work_key = doc.get("key")
+                    description = ""
+                    if work_key:
+                        work_url = f"https://openlibrary.org{work_key}.json"
+                        work_req = urllib.request.Request(
+                            work_url,
+                            headers={'User-Agent': 'AethelnetSensors/1.0 (contact: nika.hrlyn@gmail.com)'}
+                        )
+                        try:
+                            with urllib.request.urlopen(work_req, timeout=3.0) as work_res:
+                                work_data = json.loads(work_res.read().decode('utf-8'))
+                                desc_field = work_data.get("description", "")
+                                if isinstance(desc_field, dict):
+                                    description = desc_field.get("value", "")
+                                else:
+                                    description = desc_field
+                        except Exception:
+                            pass
+                            
+                    # Clean/limit description length
+                    if description:
+                        description = description[:800] + "..." if len(description) > 800 else description
+                    else:
+                        description = "No description available on Open Library."
+
                     books.append({
                         "title": doc.get("title", ""),
                         "author": ", ".join(doc.get("author_name", [])) if doc.get("author_name") else "Unknown",
                         "first_publish_year": doc.get("first_publish_year", ""),
-                        "subject": ", ".join(doc.get("subject", [])[:5]) if doc.get("subject") else ""
+                        "subject": ", ".join(doc.get("subject", [])[:5]) if doc.get("subject") else "",
+                        "description": description
                     })
                 return books
         except Exception as e:
