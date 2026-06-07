@@ -544,6 +544,21 @@ async def autonomous_curiosity_scouter():
                     graph_instance.nx_graph.add_edge(query_term, r_id, weight=0.75)
                     save_edge(query_term, r_id, 0.75)
                     logger.info(f"[Curiosity] Discovered GitHub repository: {r_id}")
+
+                # 4. Open Library Query
+                books = await loop.run_in_executor(None, sensors.query_open_library, query_term)
+                for book in books:
+                    b_id = f"Book_{book['title']}"
+                    b_emb = text_to_embedding(b_id)
+                    graph_instance.add_node(b_id, b_emb)
+                    save_node(
+                        b_id, b_emb, 0.0, 0.85, 0.0, False, False,
+                        text_content=f"Title: {book['title']}\nAuthor: {book['author']}\nPublished: {book['first_publish_year']}\nSubjects: {book['subject']}",
+                        source_tag="sensor_openlibrary"
+                    )
+                    graph_instance.nx_graph.add_edge(query_term, b_id, weight=0.8)
+                    save_edge(query_term, b_id, 0.8)
+                    logger.info(f"[Curiosity] Discovered Open Library book metadata: {b_id}")
                     
         except Exception as e:
             logger.error(f"[Curiosity] Loop execution failed: {e}")

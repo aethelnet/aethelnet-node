@@ -216,3 +216,71 @@ class SensorArray:
         except Exception as e:
             logger.debug(f"[GitHub Sensor] Failed to query '{query}': {e}")
             return []
+
+    def perceive_cosmic_pulse(self) -> str:
+        """
+        Fetches live cosmic and planetary telemetry from swpc.noaa.gov and earthquake.usgs.gov.
+        """
+        results = []
+        # 1. Earthquakes
+        try:
+            req = urllib.request.Request("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson", headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                quakes = data.get("features", [])
+                mags = [q["properties"]["mag"] for q in quakes if q["properties"]["mag"] is not None]
+                if mags:
+                    results.append(f"Seismic Activity: {len(mags)} earthquakes in the last hour. Max magnitude: {max(mags):.1f}. Cumulative magnitude: {sum(mags):.1f}")
+        except Exception:
+            pass
+
+        # 2. Solar Wind & Magnetics (NOAA SWPC)
+        try:
+            req = urllib.request.Request("https://services.swpc.noaa.gov/products/solar-wind/mag-5-minute.json", headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                latest = json.loads(res.read().decode('utf-8'))[-1]
+                bt = float(latest[6])
+                bz = float(latest[3])
+                results.append(f"Magnetosphere: IMF Bt={bt:.1f} nT, Bz={bz:.1f} nT (polarity {'negative' if bz < 0 else 'positive'})")
+        except Exception:
+            pass
+
+        # 3. Kp-Index (Geomagnetic Activity)
+        try:
+            req = urllib.request.Request("https://services.swpc.noaa.gov/json/planetary_k_index_1m.json", headers={'User-Agent': 'Aethelnet/1.0'})
+            with urllib.request.urlopen(req, timeout=3.0) as res:
+                latest = json.loads(res.read().decode('utf-8'))[-1]
+                kp = float(latest.get("kp_index", 0.0))
+                results.append(f"Geomagnetism: Planetary Kp-index is {kp:.1f}")
+        except Exception:
+            pass
+
+        if results:
+            return " | ".join(results)
+        return "Planetary telemetry silent."
+
+    def query_open_library(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Searches Open Library for books related to the concept.
+        """
+        import urllib.parse
+        url = f"https://openlibrary.org/search.json?q={urllib.parse.quote(query)}"
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'AethelnetSensors/1.0 (contact: nika.hrlyn@gmail.com)'}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as res:
+                data = json.loads(res.read().decode('utf-8'))
+                books = []
+                for doc in data.get("docs", [])[:3]:  # Top 3 books
+                    books.append({
+                        "title": doc.get("title", ""),
+                        "author": ", ".join(doc.get("author_name", [])) if doc.get("author_name") else "Unknown",
+                        "first_publish_year": doc.get("first_publish_year", ""),
+                        "subject": ", ".join(doc.get("subject", [])[:5]) if doc.get("subject") else ""
+                    })
+                return books
+        except Exception as e:
+            logger.debug(f"[Open Library Sensor] Failed to query '{query}': {e}")
+            return []
