@@ -49,6 +49,9 @@ REALITY_ANCHORS = {
 # --- P2P Network Settings ---
 KNOWN_PEERS = ["172.20.10.10:8000", "141.147.20.191:8000"]
 
+class PeerRegisterPayload(BaseModel):
+    peer_address: str
+
 class NodeCreate(BaseModel):
     id: str
     text_content: str
@@ -197,6 +200,29 @@ async def ping_peer():
     hostname = socket.gethostname()
     return {"status": "alive", "peer_id": f"lgnn_node_{hostname}", "version": "1.0.0"}
 
+@app.get("/p2p/peers")
+async def get_peers():
+    return {"peers": list(KNOWN_PEERS)}
+
+@app.post("/p2p/register")
+async def register_peer(payload: PeerRegisterPayload):
+    peer = payload.peer_address.strip()
+    # Check if not ourselves (both via loopback and our real hostname/IP resolved)
+    my_ip = "127.0.0.1"
+    try:
+        my_ip = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        pass
+    
+    if peer == f"{my_ip}:8000" or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
+        return {"status": "self_registration_ignored", "peers": list(KNOWN_PEERS)}
+
+    if peer and peer not in KNOWN_PEERS:
+        KNOWN_PEERS.append(peer)
+        logger.info(f"[P2P] Dynamic Peer registered: {peer}")
+        return {"status": "registered", "peers": list(KNOWN_PEERS)}
+    return {"status": "already_registered", "peers": list(KNOWN_PEERS)}
+
 @app.get("/p2p/expertise")
 async def extract_expertise():
     sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
@@ -330,10 +356,20 @@ async def hunt_for_peers():
     import httpx
     logger.info("[P2P] Peer Hunter active...")
     while True:
+        my_ip = "127.0.0.1"
+        try:
+            my_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            pass
+        my_addr = f"{my_ip}:8000"
+
+        current_peers = list(KNOWN_PEERS)
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for peer in KNOWN_PEERS:
-                if peer == f"{socket.gethostbyname(socket.gethostname())}:8000" or peer.startswith("127.0.0.1"):
+            for peer in current_peers:
+                if peer == my_addr or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
                     continue
+                
+                # 1. Fetch their expertise
                 peer_url = f"http://{peer}/p2p/expertise"
                 try:
                     response = await client.get(peer_url)
@@ -360,7 +396,27 @@ async def hunt_for_peers():
                             graph_instance.define_persona(persona_name, persona_node_ids)
                             save_persona(persona_name, persona_node_ids, active=True)
                             graph_instance.set_persona_active(persona_name, True)
-                            
+                except Exception:
+                    pass
+
+                # 2. Fetch their peer list for discovery
+                peers_url = f"http://{peer}/p2p/peers"
+                try:
+                    response = await client.get(peers_url)
+                    if response.status_code == 200:
+                        data = response.json()
+                        discovered = data.get("peers", [])
+                        for dp in discovered:
+                            dp_clean = dp.strip()
+                            if dp_clean and dp_clean not in KNOWN_PEERS and dp_clean != my_addr and not dp_clean.startswith("127.0.0.1") and not dp_clean.startswith("localhost"):
+                                KNOWN_PEERS.append(dp_clean)
+                                logger.info(f"[P2P] Dynamically discovered new peer: {dp_clean} (via {peer})")
+                                # Register ourselves with the newly discovered peer
+                                try:
+                                    await client.post(f"http://{dp_clean}/p2p/register", json={"peer_address": my_addr})
+                                    logger.info(f"[P2P] Registered ourselves with newly discovered peer {dp_clean}")
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
         await asyncio.sleep(60)
@@ -518,8 +574,29 @@ async def startup_event():
                 logger.error(f"[ODE] Evolution step failed: {e}")
             await asyncio.sleep(10)
             
+    async def register_with_all_known_peers():
+        await asyncio.sleep(5)  # Wait for uvicorn to settle
+        my_ip = "127.0.0.1"
+        try:
+            my_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            pass
+        my_addr = f"{my_ip}:8000"
+        
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for peer in list(KNOWN_PEERS):
+                if peer == my_addr or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
+                    continue
+                try:
+                    await client.post(f"http://{peer}/p2p/register", json={"peer_address": my_addr})
+                    logger.info(f"[P2P] Registered ourselves ({my_addr}) with peer {peer} on startup")
+                except Exception:
+                    pass
+
     asyncio.create_task(continuous_ode_loop())
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
+    asyncio.create_task(register_with_all_known_peers())
     logger.info("[Aethelnet Node] Startup actions completed.")
