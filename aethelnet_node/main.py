@@ -122,6 +122,10 @@ async def ingest_file(payload: FileIngestRequest, background_tasks: BackgroundTa
         chunks = sensors.parse_pdf(payload.file_path)
     elif ext in [".obj", ".stl"]:
         chunks = sensors.perceive_spatial_geometry(payload.file_path)
+    elif ext in [".txt", ".md"]:
+        with open(payload.file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        chunks = [{"type": "text", "content": text, "metadata": payload.file_path}]
     else:
         raise HTTPException(status_code=400, detail="Unsupported file format.")
         
@@ -291,13 +295,24 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info("[WS] Client connected.")
     try:
         while True:
-            nodes_count = len(graph_instance.nodes)
-            edges_count = len(graph_instance.nx_graph.edges)
+            nodes_data = []
+            links_data = []
+            for nid in list(graph_instance.nodes.keys()):
+                state_tensor = graph_instance.nodes[nid]
+                mean_act = float(state_tensor.mean().detach().cpu())
+                nodes_data.append({"id": nid, "activation": mean_act})
+            for u, v, data in graph_instance.nx_graph.edges(data=True):
+                links_data.append({"source": u, "target": v, "weight": data.get("weight", 1.0)})
+                
             await websocket.send_json({
                 "type": "telemetry",
-                "nodes": nodes_count,
-                "bridges": edges_count,
-                "state": "Active"
+                "nodes": len(nodes_data),
+                "bridges": len(links_data),
+                "state": "Active",
+                "graph": {
+                    "nodes": nodes_data,
+                    "links": links_data
+                }
             })
             await asyncio.sleep(2)
     except WebSocketDisconnect:
