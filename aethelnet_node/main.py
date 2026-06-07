@@ -394,6 +394,19 @@ async def gossip_truth_to_peers():
                         pass
         await asyncio.sleep(60)
 
+@app.get("/api/lgnn/node/{node_id}")
+async def get_node_details(node_id: str):
+    text = get_node_text(node_id)
+    safe_id = graph_instance._safe_id(node_id)
+    metrics = node_metrics.get(safe_id, {})
+    return {
+        "id": node_id,
+        "text_content": text,
+        "confidence": metrics.get("confidence", 0.8),
+        "source_tag": metrics.get("source_tag", "internal"),
+        "is_grounded": metrics.get("is_grounded", False)
+    }
+
 # --- STARTUP EVENT ---
 @app.on_event("startup")
 async def startup_event():
