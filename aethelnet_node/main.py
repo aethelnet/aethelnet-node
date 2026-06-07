@@ -437,11 +437,26 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
         "evolved_text": "\n".join(evolution_lines)
     }
 
+def calculate_centrality(graph) -> Dict[str, float]:
+    import networkx as nx
+    if not graph or graph.number_of_nodes() == 0:
+        return {}
+    try:
+        return nx.eigenvector_centrality(graph, weight='weight', max_iter=1000, tol=1e-3)
+    except Exception:
+        try:
+            return nx.pagerank(graph, weight='weight')
+        except Exception:
+            return nx.degree_centrality(graph)
+
 @app.get("/api/lgnn/graph")
 async def get_graph():
     nodes_data = []
     links_data = []
     
+    centrality_scores = calculate_centrality(graph_instance.nx_graph)
+    leader_node = max(centrality_scores, key=centrality_scores.get) if centrality_scores else None
+
     for nid in list(graph_instance.nodes.keys()):
         state_tensor = graph_instance.nodes[nid]
         mean_activation = float(state_tensor.mean().detach().cpu())
@@ -459,7 +474,9 @@ async def get_graph():
             "mean_activation": mean_activation,
             "confidence": metrics["confidence"],
             "is_grounded": metrics["is_grounded"],
-            "source_tag": metrics["source_tag"]
+            "source_tag": metrics["source_tag"],
+            "is_leader": (orig_id == leader_node),
+            "centrality": centrality_scores.get(orig_id, 0.0)
         })
         
     for u, v, data in graph_instance.nx_graph.edges(data=True):
@@ -481,13 +498,22 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             nodes_data = []
             links_data = []
+            centrality_scores = calculate_centrality(graph_instance.nx_graph)
+            leader_node = max(centrality_scores, key=centrality_scores.get) if centrality_scores else None
+
             for nid in list(graph_instance.nodes.keys()):
                 state_tensor = graph_instance.nodes[nid]
                 mean_act = float(state_tensor.mean().detach().cpu())
                 if not math.isfinite(mean_act):
                     mean_act = 1.0 if mean_act > 0 else -1.0
                 orig_id = graph_instance._original_id(nid)
-                nodes_data.append({"id": orig_id, "label": orig_id, "activation": mean_act})
+                nodes_data.append({
+                    "id": orig_id, 
+                    "label": orig_id, 
+                    "activation": mean_act,
+                    "is_leader": (orig_id == leader_node),
+                    "centrality": centrality_scores.get(orig_id, 0.0)
+                })
             for u, v, data in graph_instance.nx_graph.edges(data=True):
                 links_data.append({"source": u, "target": v, "weight": data.get("weight", 1.0)})
                 
@@ -496,6 +522,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "nodes": len(nodes_data),
                 "bridges": len(links_data),
                 "state": "Active",
+                "leader": leader_node if leader_node else "None",
                 "graph": {
                     "nodes": nodes_data,
                     "links": links_data
