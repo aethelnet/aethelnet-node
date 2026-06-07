@@ -831,11 +831,139 @@ async def workspace_file_watcher():
 @app.on_event("startup")
 async def startup_event():
     load_all_from_db()
+    
+    def deduplicate_and_merge_nodes(threshold: float = 0.92):
+        """
+        Scans all GNN nodes for high cosine similarity and merges them,
+        preserving the one with higher confidence/reality grounding.
+        """
+        nodes_keys = list(graph_instance.nodes.keys())
+        if len(nodes_keys) < 2:
+            return
+            
+        # Get all embeddings and normalize them
+        embs = {}
+        orig_ids = {}
+        for nid in nodes_keys:
+            orig_id = graph_instance._original_id(nid)
+            orig_ids[nid] = orig_id
+            emb = graph_instance.nodes[nid]
+            embs[nid] = emb / (emb.norm() + 1e-8)
+            
+        merged_any = False
+        discarded = set()
+        
+        for i in range(len(nodes_keys)):
+            nid_a = nodes_keys[i]
+            if nid_a in discarded:
+                continue
+                
+            for j in range(i + 1, len(nodes_keys)):
+                nid_b = nodes_keys[j]
+                if nid_b in discarded:
+                    continue
+                    
+                sim = float(torch.dot(embs[nid_a], embs[nid_b]).detach().cpu())
+                if sim > threshold:
+                    orig_a = orig_ids[nid_a]
+                    orig_b = orig_ids[nid_b]
+                    
+                    # Check reality anchors
+                    is_anchor_a = orig_a in REALITY_ANCHORS
+                    is_anchor_b = orig_b in REALITY_ANCHORS
+                    
+                    metrics_a = node_metrics.get(nid_a, {})
+                    metrics_b = node_metrics.get(nid_b, {})
+                    
+                    conf_a = metrics_a.get("confidence", 0.0)
+                    conf_b = metrics_b.get("confidence", 0.0)
+                    
+                    if is_anchor_a and not is_anchor_b:
+                        keep_nid, discard_nid = nid_a, nid_b
+                    elif is_anchor_b and not is_anchor_a:
+                        keep_nid, discard_nid = nid_b, nid_a
+                    elif conf_a >= conf_b:
+                        keep_nid, discard_nid = nid_a, nid_b
+                    else:
+                        keep_nid, discard_nid = nid_b, nid_a
+                        
+                    keep_orig = orig_ids[keep_nid]
+                    discard_orig = orig_ids[discard_nid]
+                    
+                    logger.info(f"[Topology] Merging highly similar nodes: '{discard_orig}' -> '{keep_orig}' (Similarity: {sim:.4f})")
+                    
+                    # 1. Merge text content
+                    text_keep = get_node_text(keep_orig)
+                    text_discard = get_node_text(discard_orig)
+                    merged_text = text_keep
+                    if text_discard and text_discard != text_keep:
+                        if text_keep:
+                            merged_text = f"{text_keep}\n\n[Alternative Perspective]: {text_discard}"
+                        else:
+                            merged_text = text_discard
+                    
+                    # 2. Merge embeddings
+                    emb_keep = graph_instance.nodes[keep_nid]
+                    emb_discard = graph_instance.nodes[discard_nid]
+                    blended = emb_keep + emb_discard * 0.3
+                    blended_norm = blended / (blended.norm() + 1e-8) * max(emb_keep.norm(), emb_discard.norm())
+                    
+                    graph_instance.nodes[keep_nid] = torch.nn.Parameter(blended_norm.clone().detach())
+                    
+                    # 3. Transfer edges
+                    if discard_orig in graph_instance.nx_graph:
+                        neighbors = list(graph_instance.nx_graph.neighbors(discard_orig))
+                        for neighbor in neighbors:
+                            if neighbor != keep_orig:
+                                w_discard = graph_instance.nx_graph[discard_orig][neighbor].get("weight", 1.0)
+                                w_keep = 1.0
+                                if graph_instance.nx_graph.has_edge(keep_orig, neighbor):
+                                    w_keep = graph_instance.nx_graph[keep_orig][neighbor].get("weight", 1.0)
+                                
+                                new_weight = max(w_keep, w_discard)
+                                graph_instance.nx_graph.add_edge(keep_orig, neighbor, weight=new_weight)
+                                save_edge(keep_orig, neighbor, new_weight)
+                                
+                            delete_edge(discard_orig, neighbor)
+                    
+                    # 4. Update metrics
+                    metrics_keep = node_metrics.setdefault(keep_nid, {
+                        "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
+                        "is_grounded": keep_orig in REALITY_ANCHORS,
+                        "help_chain": False, "source_tag": "internal", "is_quarantined": False
+                    })
+                    metrics_discard = node_metrics.get(discard_nid, {})
+                    
+                    new_conf = min(0.99, metrics_keep.get("confidence", DEFAULT_CONFIDENCE) + metrics_discard.get("confidence", 0.0) * 0.1)
+                    metrics_keep["confidence"] = new_conf
+                    node_metrics[keep_nid] = metrics_keep
+                    
+                    save_node(
+                        keep_orig, graph_instance.nodes[keep_nid], float(graph_instance.nodes[keep_nid].mean().detach().cpu()),
+                        new_conf, metrics_keep.get("plateau_factor", 0.0),
+                        keep_orig in REALITY_ANCHORS, metrics_keep.get("help_chain", False),
+                        text_content=merged_text, source_tag=metrics_keep.get("source_tag", "internal")
+                    )
+                    
+                    # 5. Delete discard node
+                    graph_instance.remove_node(discard_orig)
+                    delete_node(discard_orig)
+                    if discard_nid in node_metrics:
+                        del node_metrics[discard_nid]
+                        
+                    discarded.add(discard_nid)
+                    merged_any = True
+                    break
+            if merged_any:
+                break
+
     # Start the continuous ODE evolution loop in background
     async def continuous_ode_loop():
         while True:
             try:
                 graph_instance.evolve_topology(compute_time=1.0)
+                # Run node deduplication and merging
+                deduplicate_and_merge_nodes()
                 # Persist evolved node parameters and update confidence breathing lifecycle
                 for nid in list(graph_instance.nodes.keys()):
                     state_tensor = graph_instance.nodes[nid]
