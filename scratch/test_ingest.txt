@@ -1,0 +1,3 @@
+This is a test observation document.
+We are exploring the application of neural ode systems inside continuous topological structures.
+The integration of a neural ode allows us to model dynamics as continuous-time processes.
