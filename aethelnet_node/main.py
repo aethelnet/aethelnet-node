@@ -900,10 +900,32 @@ async def startup_event():
                 except Exception:
                     pass
 
+    async def cosmic_telemetry_watcher():
+        await asyncio.sleep(10)  # Wait for GNN to settle
+        from aethelnet_node.sensors import SensorArray
+        sensors = SensorArray()
+        while True:
+            try:
+                loop = asyncio.get_event_loop()
+                pulse = await loop.run_in_executor(None, sensors.perceive_cosmic_pulse)
+                if pulse and "Planetary telemetry silent" not in pulse:
+                    logger.info("[Cosmic Sensor] Live planetary telemetry broadcast received.")
+                    emb = text_to_embedding(pulse)
+                    node_id = f"Obs_cosmic_telemetry_{int(time.time())}"
+                    graph_instance.add_node(node_id, emb)
+                    save_node(
+                        node_id, emb, 0.0, 0.85, 0.0, False, False, 
+                        text_content=pulse, source_tag="sensor_cosmic"
+                    )
+            except Exception as e:
+                logger.error(f"[Cosmic Sensor] Telemetry watcher failed: {e}")
+            await asyncio.sleep(60)
+
     asyncio.create_task(continuous_ode_loop())
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
     asyncio.create_task(register_with_all_known_peers())
     asyncio.create_task(workspace_file_watcher())
+    asyncio.create_task(cosmic_telemetry_watcher())
     logger.info("[Aethelnet Node] Startup actions completed.")
