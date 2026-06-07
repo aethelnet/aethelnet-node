@@ -740,7 +740,7 @@ async def autonomous_curiosity_scouter():
                     graph_instance.add_node(b_id, b_emb)
                     save_node(
                         b_id, b_emb, 0.0, KNOWLEDGE_CONFIDENCE, 0.0, False, False,
-                        text_content=f"Title: {book['title']}\nAuthor: {book['author']}\nPublished: {book['first_publish_year']}\nSubjects: {book['subject']}",
+                        text_content=f"Title: {book['title']}\nAuthor: {book['author']}\nPublished: {book['first_publish_year']}\nSubjects: {book['subject']}\n\nDescription:\n{book['description']}",
                         source_tag="sensor_openlibrary"
                     )
                     graph_instance.nx_graph.add_edge(query_term, b_id, weight=0.8)
