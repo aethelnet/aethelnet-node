@@ -64,6 +64,14 @@ class PeerSyncPayload(BaseModel):
     nodes: List[Dict[str, Any]]
     edges: List[Dict[str, Any]]
 
+class GenerateResponseRequest(BaseModel):
+    prompt: str
+    persona: Optional[str] = None
+    length: str = "medium"  # short, medium, long
+
+class EvolveTextRequest(BaseModel):
+    text: str
+
 class UniversalIngest(BaseModel):
     bot_name: str
     observation: str
@@ -281,6 +289,153 @@ async def create_node_route(payload: NodeCreate):
         is_quarantined=payload.is_quarantined
     )
     return {"status": "created", "id": payload.id}
+
+@app.post("/api/lgnn/generate-response")
+async def generate_response_endpoint(data: GenerateResponseRequest):
+    emb = text_to_embedding(data.prompt, dim=HIDDEN_DIM)
+    
+    # Filter nodes based on active persona if specified
+    active_nodes = list(graph_instance.nodes.keys())
+    if data.persona and data.persona in graph_instance.personas:
+        p_nodes = graph_instance.personas[data.persona]
+        if p_nodes:
+            active_nodes = [n for n in active_nodes if n in p_nodes]
+            
+    if not active_nodes:
+        return {"status": "error", "message": "No active nodes in selected persona context."}
+        
+    # Calculate similarities
+    node_embs = torch.stack([graph_instance.nodes[n] for n in active_nodes])
+    norm_prompt = emb / (emb.norm() + 1e-8)
+    norm_nodes = node_embs / (node_embs.norm(dim=-1, keepdim=True) + 1e-8)
+    similarities = torch.matmul(norm_nodes, norm_prompt)
+    
+    # Sort and pick top N
+    sim_scores = [(active_nodes[i], float(similarities[i].detach().cpu())) for i in range(len(active_nodes))]
+    sim_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    num_to_pick = 1 if data.length == "short" else 2 if data.length == "medium" else 4
+    top_matches = sim_scores[:num_to_pick]
+    
+    # Extract data for voice module
+    top_nodes_data = []
+    for nid, score in top_matches:
+        orig_id = graph_instance._original_id(nid)
+        top_nodes_data.append({
+            "id": orig_id,
+            "text": get_node_text(orig_id),
+            "score": score
+        })
+        
+    from aethelnet_node.voice import synthesize_voice
+    voice_response = synthesize_voice(
+        top_nodes_data, 
+        decay_rate=graph_instance.decay_rate,
+        prompt=data.prompt,
+        persona=data.persona
+    )
+    
+    return {
+        "status": "success",
+        "response": voice_response,
+        "matches": [{"node_id": graph_instance._original_id(nid), "score": score} for nid, score in top_matches]
+    }
+
+@app.post("/api/lgnn/evolve-text")
+async def evolve_text_endpoint(data: EvolveTextRequest):
+    # 1. Advanced Tagging & Concept Extraction
+    from aethelnet_node.sensors import SensorArray
+    sensors = SensorArray()
+    found_kws = sensors.extract_keywords(data.text)
+    tags = ", ".join(found_kws) if found_kws else "Unclassified"
+    
+    node_name = found_kws[0].strip()[:30] if found_kws else "TempNode"
+    temp_id = f"{node_name}_{hash(data.text) % 10000}"
+    
+    enriched_text = f"Tags: {tags}\n\nContent: {data.text}"
+    emb = text_to_embedding(enriched_text, dim=HIDDEN_DIM)
+    
+    # Find initial wiring to the swarm
+    top_3_nodes = []
+    if graph_instance.nodes:
+        norm_emb = emb / (emb.norm() + 1e-8)
+        sims = []
+        for nid, nemb in graph_instance.nodes.items():
+            norm_nemb = nemb / (nemb.norm() + 1e-8)
+            sim = float(torch.dot(norm_emb, norm_nemb).detach().cpu())
+            sims.append((nid, sim))
+        sims.sort(key=lambda x: x[1], reverse=True)
+        top_3_nodes = [nid for nid, sim in sims[:3]]
+        
+    graph_instance.add_node(temp_id, emb, connections=[graph_instance._original_id(n) for n in top_3_nodes])
+    node_metrics[temp_id] = {
+        "confidence": 0.8,
+        "plateau_factor": 0.0,
+        "is_grounded": False,
+        "help_chain": False,
+        "source_tag": "internal"
+    }
+    save_node(temp_id, emb, 0.0, 0.8, 0.0, False, False, text_content=enriched_text)
+    
+    # Measure initial alignment
+    nodes_list = list(graph_instance.nodes.keys())
+    anchors = [n for n in nodes_list if graph_instance._original_id(n) in REALITY_ANCHORS]
+    
+    initial_align = {}
+    if anchors:
+        temp_emb = graph_instance.nodes[temp_id]
+        norm_temp = temp_emb / (temp_emb.norm() + 1e-8)
+        for anchor in anchors:
+            a_emb = graph_instance.nodes[anchor]
+            norm_a = a_emb / (a_emb.norm() + 1e-8)
+            sim = float(torch.dot(norm_temp, norm_a).detach().cpu())
+            initial_align[graph_instance._original_id(anchor)] = sim
+            
+    # Evolve topology
+    graph_instance.evolve_topology(compute_time=1.5)
+    
+    # Measure final alignment
+    final_align = {}
+    if anchors:
+        temp_emb = graph_instance.nodes[temp_id]
+        norm_temp = temp_emb / (temp_emb.norm() + 1e-8)
+        for anchor in anchors:
+            a_emb = graph_instance.nodes[anchor]
+            norm_a = a_emb / (a_emb.norm() + 1e-8)
+            sim = float(torch.dot(norm_temp, norm_a).detach().cpu())
+            final_align[graph_instance._original_id(anchor)] = sim
+            
+    # Remove temporary node
+    graph_instance.remove_node(temp_id)
+    delete_node(temp_id)
+    
+    # Synthesize evolution report
+    evolution_lines = [
+        "### ⚡ Latent State Evolution Complete",
+        f"**Original Text**: \"{data.text[:120]}...\"",
+        "",
+        "#### Attractor Alignment Analysis:"
+    ]
+    
+    for anchor_name in initial_align.keys():
+        init_val = initial_align.get(anchor_name, 0.0)
+        final_val = final_align.get(anchor_name, 0.0)
+        diff = final_val - init_val
+        direction = "Pull (+)" if diff > 0 else "Push (-)"
+        evolution_lines.append(
+            f"- **{anchor_name}**: Align shifted from {round(init_val * 100, 1)}% to {round(final_val * 100, 1)}% ({direction} {round(abs(diff) * 100, 1)}%)"
+        )
+        
+    evolution_lines.extend([
+        "",
+        "#### Evolved Hypothesis Output:",
+        f"> The concepts presented converged towards nearest attractors, resolving latent contradictions and stabilizing topology. Alignment with Reality Anchors changed by average of {round(sum(final_align.values())/len(final_align) - sum(initial_align.values())/len(initial_align), 3) * 100 if anchors else 0.0}%."
+    ])
+    
+    return {
+        "status": "success",
+        "evolved_text": "\n".join(evolution_lines)
+    }
 
 @app.get("/api/lgnn/graph")
 async def get_graph():
