@@ -264,14 +264,17 @@ async def get_graph():
     for nid in list(graph_instance.nodes.keys()):
         state_tensor = graph_instance.nodes[nid]
         mean_activation = float(state_tensor.mean().detach().cpu())
+        if not math.isfinite(mean_activation):
+            mean_activation = 1.0 if mean_activation > 0 else -1.0
+        orig_id = graph_instance._original_id(nid)
         metrics = node_metrics.setdefault(nid, {
             "confidence": 0.8, "plateau_factor": 0.0, 
-            "is_grounded": nid in REALITY_ANCHORS, 
+            "is_grounded": orig_id in REALITY_ANCHORS, 
             "help_chain": False, "source_tag": "internal", "is_quarantined": False
         })
         nodes_data.append({
-            "id": nid,
-            "label": nid,
+            "id": orig_id,
+            "label": orig_id,
             "mean_activation": mean_activation,
             "confidence": metrics["confidence"],
             "is_grounded": metrics["is_grounded"],
@@ -300,7 +303,10 @@ async def websocket_endpoint(websocket: WebSocket):
             for nid in list(graph_instance.nodes.keys()):
                 state_tensor = graph_instance.nodes[nid]
                 mean_act = float(state_tensor.mean().detach().cpu())
-                nodes_data.append({"id": nid, "activation": mean_act})
+                if not math.isfinite(mean_act):
+                    mean_act = 1.0 if mean_act > 0 else -1.0
+                orig_id = graph_instance._original_id(nid)
+                nodes_data.append({"id": orig_id, "label": orig_id, "activation": mean_act})
             for u, v, data in graph_instance.nx_graph.edges(data=True):
                 links_data.append({"source": u, "target": v, "weight": data.get("weight", 1.0)})
                 
