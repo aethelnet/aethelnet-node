@@ -892,15 +892,10 @@ async def startup_event():
                     
                     logger.info(f"[Topology] Merging highly similar nodes: '{discard_orig}' -> '{keep_orig}' (Similarity: {sim:.4f})")
                     
-                    # 1. Merge text content
+                    # 1. Merge text content (Keep the higher-confidence node's text to prevent infinite bloat)
                     text_keep = get_node_text(keep_orig)
                     text_discard = get_node_text(discard_orig)
-                    merged_text = text_keep
-                    if text_discard and text_discard != text_keep:
-                        if text_keep:
-                            merged_text = f"{text_keep}\n\n[Alternative Perspective]: {text_discard}"
-                        else:
-                            merged_text = text_discard
+                    merged_text = text_keep or text_discard
                     
                     # 2. Merge embeddings
                     emb_keep = graph_instance.nodes[keep_nid]
