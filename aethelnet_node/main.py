@@ -416,16 +416,51 @@ async def startup_event():
         while True:
             try:
                 graph_instance.evolve_topology(compute_time=1.0)
-                # Persist evolved node parameters
+                # Persist evolved node parameters and update confidence breathing lifecycle
                 for nid in list(graph_instance.nodes.keys()):
                     state_tensor = graph_instance.nodes[nid]
-                    metrics = node_metrics.get(nid, {})
-                    save_node(
-                        nid, state_tensor, float(state_tensor.mean().detach().cpu()), 
-                        metrics.get("confidence", 0.8), metrics.get("plateau_factor", 0.0), 
-                        metrics.get("is_grounded", False), metrics.get("help_chain", False),
-                        text_content=get_node_text(nid), source_tag=metrics.get("source_tag", "internal")
-                    )
+                    mean_act = float(state_tensor.mean().detach().cpu())
+                    
+                    orig_id = graph_instance._original_id(nid)
+                    metrics = node_metrics.setdefault(nid, {
+                        "confidence": 0.8, "plateau_factor": 0.0,
+                        "is_grounded": orig_id in REALITY_ANCHORS,
+                        "help_chain": False, "source_tag": "internal", "is_quarantined": False
+                    })
+                    
+                    confidence = metrics.get("confidence", 0.8)
+                    
+                    # Reality Anchors are grounded (permanent 0.95 confidence)
+                    if orig_id in REALITY_ANCHORS:
+                        confidence = 0.95
+                    else:
+                        # Confidence breathing: degree of node in networkx graph
+                        degree = graph_instance.nx_graph.degree(orig_id) if orig_id in graph_instance.nx_graph else 0
+                        # Active nodes with bridges gain confidence, isolated/inactive decay
+                        if degree > 0 and abs(mean_act) > 0.05:
+                            delta = (abs(mean_act) * 0.02) + (degree * 0.005)
+                        else:
+                            delta = -0.04 # Decay
+                            
+                        confidence = min(1.0, max(0.0, confidence + delta))
+                    
+                    metrics["confidence"] = confidence
+                    node_metrics[nid] = metrics
+                    
+                    # Legacy nodes pruning: if confidence decays to 0.15 or below, delete node
+                    # (only if it is not grounded and has no original text)
+                    text_content = get_node_text(orig_id)
+                    if confidence <= 0.15 and orig_id not in REALITY_ANCHORS and not text_content:
+                        logger.info(f"[Lifecycle] Pruning dead legacy node: {orig_id}")
+                        graph_instance.remove_node(orig_id)
+                        delete_node(orig_id)
+                    else:
+                        save_node(
+                            orig_id, state_tensor, mean_act, 
+                            confidence, metrics.get("plateau_factor", 0.0), 
+                            orig_id in REALITY_ANCHORS, metrics.get("help_chain", False),
+                            text_content=text_content, source_tag=metrics.get("source_tag", "internal")
+                        )
             except Exception as e:
                 logger.error(f"[ODE] Evolution step failed: {e}")
             await asyncio.sleep(10)
