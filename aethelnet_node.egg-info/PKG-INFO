@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: aethelnet-node
+Version: 1.0.0
+Summary: Decentralized P2P Gossip Node for Aethelnet
+Author: Aethelnet
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: fastapi>=0.90.0
+Requires-Dist: uvicorn>=0.20.0
+Requires-Dist: httpx>=0.23.0
+Requires-Dist: pydantic>=1.10.0
+Dynamic: author
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

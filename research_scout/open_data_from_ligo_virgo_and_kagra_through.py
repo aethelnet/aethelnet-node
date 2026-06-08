@@ -1,9 +1,9 @@
 """
-PAPER: Open Data from LIGO, Virgo, and KAGRA through the First Part of the Fourth Observing Run
-LINK: http://arxiv.org/abs/2508.18079v3
+PAPER: Open Data from LIGO, Virgo, and KAGRA through the Second Part of the Fourth Observing Run
+LINK: http://arxiv.org/abs/2605.27090v1
 
 ABSTRACT:
-LIGO, Virgo, and KAGRA form a network of gravitational-wave observatories. Data and analysis results from this network are made publicly available through the Gravitational Wave Open Science Center. This paper describes open data from this network, including the addition of data from the first part of the fourth observing run (O4a) and selected periods from the preceding engineering run, collected from May 2023 to January 2024. The public data set includes calibrated strain time series for each instrument, data from additional channels used for noise subtraction and detector characterization, and analysis data products from version 4.0 of the Gravitational-Wave Transient Catalog.
+LIGO, Virgo, KAGRA, and GEO form a network of gravitational-wave observatories. Data and analysis results from this network are made publicly available through the Gravitational Wave Open Science Center (GWOSC). This paper describes open data from this network, including the addition of data from the second part of the fourth observing run (O4b) and selected periods from the preceding engineering run (ER16), which were collected from times spanning April 6th, 2024 to January 28th, 2025. The public data set includes calibrated strain time series for each instrument, data from additional channels used for noise subtraction and detector characterization, and new analysis data products in the online GWOSC release associated with version 5.0 of the Gravitational-Wave Transient Catalog.
 """
 
 import torch
