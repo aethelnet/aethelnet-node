@@ -1,0 +1,20 @@
+"""
+PAPER: Stability of solutions to stochastic partial differential equations
+LINK: http://arxiv.org/abs/1506.01230v2
+
+ABSTRACT:
+We provide a general framework for the stability of solutions to stochastic partial differential equations with respect to perturbations of the drift. More precisely, we consider stochastic partial differential equations with drift given as the subdifferential of a convex function and prove continuous dependence of the solutions with regard to random Mosco convergence of the convex potentials. In particular, we identify the concept of stochastic variational inequalities (SVI) as a well-suited framework to study such stability properties. The generality of the developed framework is then laid out by deducing Trotter type and homogenization results for stochastic fast diffusion and stochastic singular p-Laplace equations. In addition, we provide an SVI treatment for stochastic nonlocal p-Laplace equations and prove their convergence to the respective local models.
+"""
+
+import torch
+import torch.nn as nn
+
+class ScaffoldedOptimization(nn.Module):
+    def __init__(self, hidden_dim: int = 768):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.flow_multiplier = nn.Parameter(torch.ones(1))
+
+    def forward(self, t: float, h: torch.Tensor) -> torch.Tensor:
+        # Placeholder flow dynamics. Customise based on paper math.
+        return h * self.flow_multiplier
