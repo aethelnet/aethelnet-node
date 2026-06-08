@@ -361,3 +361,59 @@ class SensorArray:
         except Exception as e:
             logger.debug(f"[Open Library Sensor] Failed to query '{query}': {e}")
             return []
+
+    def crawl_web(self, start_urls: List[str], max_pages: int = 5) -> List[Dict[str, Any]]:
+        """
+        Sensory appendage that crawls the web for deep context. 
+        Extracts paragraphs and follows links to map conceptual terrain.
+        """
+        import requests
+        from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, urljoin
+        import time
+
+        sensory_chunks = []
+        queue = start_urls.copy()
+        visited = set()
+        pages_crawled = 0
+
+        while queue and pages_crawled < max_pages:
+            url = queue.pop(0)
+            if url in visited:
+                continue
+                
+            visited.add(url)
+            logger.info(f"[Sensors] 🕸️ Crawling web at: {url}")
+            
+            try:
+                headers = {'User-Agent': 'AethelnetSensors/1.0 (contact: nika.hrlyn@gmail.com)'}
+                resp = requests.get(url, timeout=10, headers=headers)
+                if resp.status_code != 200:
+                    continue
+                    
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                
+                # Extract text
+                paragraphs = soup.find_all('p')
+                text_content = " ".join([p.get_text() for p in paragraphs])
+                
+                if len(text_content.split()) >= 50:
+                    sensory_chunks.append({
+                        "type": "web_crawl",
+                        "content": text_content,
+                        "metadata": {"url": url, "domain": urlparse(url).netloc}
+                    })
+                
+                # Pheromone trail: extract new links
+                for link in soup.find_all('a', href=True):
+                    next_url = urljoin(url, link['href'])
+                    if next_url.startswith("http") and next_url not in visited:
+                        queue.append(next_url)
+                        
+                pages_crawled += 1
+                time.sleep(1) # Be polite
+                
+            except Exception as e:
+                logger.error(f"[Sensors] ❌ Error crawling {url}: {e}")
+
+        return sensory_chunks
