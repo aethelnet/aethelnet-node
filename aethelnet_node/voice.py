@@ -24,7 +24,7 @@ def synthesize_voice(top_nodes_data, decay_rate=0.05, prompt="", persona=None):
         
     logger.info("[Voice] Bypassing LLM. Dumping raw LGNN signals directly.")
     
-    signal_dump = ["### 📡 RAW LGNN SIGNAL DUMP"]
+    signal_dump = ["### RAW LGNN SIGNAL DUMP"]
     signal_dump.append(f"**Trigger Input**: '{prompt}'\n")
     
     for i, node in enumerate(top_nodes_data):

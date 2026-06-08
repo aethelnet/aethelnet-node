@@ -15,7 +15,7 @@ from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
     load_graph_state, save_persona, load_personas, get_node_text
 )
-from aethelnet_node.spider_manager import run_spiders_from_config
+from aethelnet_node.sensor_manager import run_sensors_from_config
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -77,6 +77,7 @@ class GenerateResponseRequest(BaseModel):
 
 class EvolveTextRequest(BaseModel):
     text: str
+    iterations: int = 1
 
 class UniversalIngest(BaseModel):
     bot_name: str
@@ -387,9 +388,11 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
     nodes_list = list(graph_instance.nodes.keys())
     anchors = [n for n in nodes_list if graph_instance._original_id(n) in REALITY_ANCHORS]
     
+    safe_temp_id = graph_instance._safe_id(temp_id)
+    
     initial_align = {}
     if anchors:
-        temp_emb = graph_instance.nodes[temp_id]
+        temp_emb = graph_instance.nodes[safe_temp_id]
         norm_temp = temp_emb / (temp_emb.norm() + 1e-8)
         for anchor in anchors:
             a_emb = graph_instance.nodes[anchor]
@@ -398,12 +401,13 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
             initial_align[graph_instance._original_id(anchor)] = sim
             
     # Evolve topology
-    graph_instance.evolve_topology(compute_time=1.5)
+    for _ in range(data.iterations):
+        graph_instance.evolve_topology(compute_time=1.5)
     
     # Measure final alignment
     final_align = {}
     if anchors:
-        temp_emb = graph_instance.nodes[temp_id]
+        temp_emb = graph_instance.nodes[safe_temp_id]
         norm_temp = temp_emb / (temp_emb.norm() + 1e-8)
         for anchor in anchors:
             a_emb = graph_instance.nodes[anchor]
@@ -417,8 +421,9 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
     
     # Synthesize evolution report
     evolution_lines = [
-        "### ⚡ Latent State Evolution Complete",
+        "### Latent State Evolution Complete",
         f"**Original Text**: \"{data.text[:120]}...\"",
+        f"**Iterations**: {data.iterations}",
         "",
         "#### Attractor Alignment Analysis:"
     ]
@@ -1058,5 +1063,5 @@ async def startup_event():
     asyncio.create_task(register_with_all_known_peers())
     asyncio.create_task(workspace_file_watcher())
     asyncio.create_task(cosmic_telemetry_watcher())
-    asyncio.create_task(run_spiders_from_config())
+    asyncio.create_task(run_sensors_from_config())
     logger.info("[Aethelnet Node] Startup actions completed.")
