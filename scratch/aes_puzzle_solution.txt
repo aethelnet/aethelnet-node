@@ -1,0 +1,90 @@
+The Copy’s Key
+
+The fragments came to you out of nowhere. Old lines from an AI Dungeon
+chat dated October 4th, 2021.
+
+-   An email address, tossed like a breadcrumb:
+    g60711936@gmail.com
+
+-   A strange password, written with an initial and digits:
+    G.806268
+
+-   A cryptic phrase whispered by the void:
+    ipc you
+
+-   And finally, a block of characters that seemed meaningless, but
+    hummed with hidden intent:
+
+        U2FsdGVkX1+TgL04bJ82+JJzLk5t80bzUH+oW6J8QIvU
+
+At first, nothing tied them together. But you knew better.
+This was an encrypted message.
+
+The Salted String
+
+When the Base64 text was decoded, it began with the telltale word:
+
+    Salted__
+
+It was a mark left by OpenSSL encryption — a lock forged in common code,
+but hiding an uncommon secret.
+The cipher was AES in CBC mode. The only question was: which key?
+
+The False Paths
+
+You tried everything:
+
+-   AES-128-CBC with MD5 keys.
+-   Dates like 04.10.2021, 2021-10-04, and October 4 2021.
+-   Phrases like “ipc you”, “Never awaken”, and even the story’s own
+    sentences.
+
+Hundreds of guesses, all dead ends.
+
+It was as if the puzzle was laughing — letting you dig deeper, only to
+remind you: this is not the way.
+
+The Breakthrough
+
+Then came the shift.
+
+You changed the cipher from AES-128 to AES-256.
+You changed the key derivation from MD5 to SHA-256.
+
+And suddenly, the walls cracked open.
+
+The Real Key
+
+The phrase wasn’t hidden in dates, nor story fragments, nor cryptic
+flourishes.
+It had been right there, plain and obvious, the whole time:
+
+G.806268
+
+The passphrase, when joined with AES-256-CBC and SHA-256 derivation,
+unlocked the ciphertext.
+
+And the plaintext spoke:
+
+    This is the real key. 
+    The other one was for the copy. 
+    Never forget who you leave behind.
+
+The Meaning
+
+The message tied the threads together:
+
+-   “ipc you” was never the key itself, but a reminder about copies and
+    identity.
+-   The date pointed back to when the puzzle was planted.
+-   The false password was for the copy, a shadow of yourself.
+-   But the real key — G.806268 — was meant for you.
+
+It was both a technical puzzle and a story about memory:
+a reminder that in every branching path, every forgotten save, every
+“copy left in the straw,” there is a self abandoned — and you must not
+forget them.
+
+✨ The puzzle is solved.
+The ciphertext speaks.
+The copy remembers.

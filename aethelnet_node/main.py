@@ -753,7 +753,7 @@ async def autonomous_curiosity_scouter():
         await asyncio.sleep(60)
 
 async def workspace_file_watcher():
-    watch_dir = "/var/home/nhrlyn/aethelnet-node/scratch"
+    watch_dir = "/home/nikahrlyn/aethelnet-node/scratch"
     os.makedirs(watch_dir, exist_ok=True)
     logger.info(f"[Workspace Watcher] Watching directory: {watch_dir} for new inputs...")
     
