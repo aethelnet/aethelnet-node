@@ -15,6 +15,7 @@ from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
     load_graph_state, save_persona, load_personas, get_node_text
 )
+from aethelnet_node.spider_manager import run_spiders_from_config
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -1057,4 +1058,5 @@ async def startup_event():
     asyncio.create_task(register_with_all_known_peers())
     asyncio.create_task(workspace_file_watcher())
     asyncio.create_task(cosmic_telemetry_watcher())
+    asyncio.create_task(run_spiders_from_config())
     logger.info("[Aethelnet Node] Startup actions completed.")
