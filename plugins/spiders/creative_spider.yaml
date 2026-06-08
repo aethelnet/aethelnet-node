@@ -1,0 +1,44 @@
+name: "AethelSpider_Unit734_Creative"
+confidence: 0.95
+tags: 
+  - "art"
+  - "computer_vision"
+  - "sound_archive"
+  - "modular_synthesis"
+  - "typography"
+  - "avantgarde"
+sources:
+  # Sound & Audio Archives
+  - "https://archive.org/details/oldtimeradio"
+  - "http://linuxmusic.rocks/"
+  - "https://secretthirteen.org/"
+  - "http://quantumnatives.com/"
+  - "https://sphere-radio.net/en/"
+  - "https://dublab.de/"
+  - "https://llllllll.co/"           # lines community
+  - "https://community.vcvrack.com/" # VCV Rack Modular
+
+  # Art, Design & Typography
+  - "https://www.contemporaryartlibrary.org/"
+  - "https://monoskop.org/Bauhaus"
+  - "http://www.heterotopiaszine.com/"
+  - "https://interfacecritique.net/"
+  - "https://thisismold.com/"
+  - "https://the-brandidentity.com/"
+  - "https://ilovetypography.com/"
+
+  # Computer Vision & 3D (Standard Feeds)
+  - "https://arxiv.org/list/cs.CV/recent"
+  - "https://arxiv.org/list/cs.GR/recent"
+  - "https://en.wikipedia.org/wiki/Portal:Arts"
+
+priority_keywords: 
+  - "art"
+  - "museum"
+  - "3d"
+  - "obj"
+  - "audio"
+  - "synthesis"
+  - "typography"
+  - "avantgarde"
+  - "exhibition"
