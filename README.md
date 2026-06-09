@@ -87,4 +87,4 @@ Users do not "chat" with the node. You interact with it by dropping files (text,
 
 This codebase is provided as an open-source framework for decentralized, continuous-learning topologies. We encourage researchers to audit the ODE solvers in the core package and observe the emergent behaviors within the P2P mesh.
 
-*License: MIT*
+*License: AGPL-3.0*
