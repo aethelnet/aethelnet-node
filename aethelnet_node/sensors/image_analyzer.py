@@ -96,5 +96,8 @@ class ImageAnalyzerSensor(BaseSensor):
                 await self.ingest_to_lgnn(observation, additional_tags=["local_image", "visual_ingest"])
                 self.visited.add(filepath)
                 self._save_visited()
+                if os.path.basename(filepath).startswith(("omni_dream_", "lgnn_dream_")):
+                    os.remove(filepath)
+                    logger.info(f"[{self.name}] Digested and deleted dream file {filepath}")
                 
             await asyncio.sleep(1.0)

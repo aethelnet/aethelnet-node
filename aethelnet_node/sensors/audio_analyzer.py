@@ -105,5 +105,11 @@ class AudioAnalyzerSensor(BaseSensor):
                 await self.ingest_to_lgnn(observation, additional_tags=meta_tags)
                 self.visited.add(filepath)
                 self._save_visited()
+                if os.path.basename(filepath).startswith("omni_dream_"):
+                    try:
+                        os.remove(filepath)
+                        logger.info(f"[{self.name}] Digested and deleted dream file {filepath}")
+                    except OSError:
+                        pass
                 
             await asyncio.sleep(1.0)
