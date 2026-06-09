@@ -339,6 +339,14 @@ async def receive_gossip_msgpack(request: Request):
         
     logger.info(f"[P2P Immune System] Accepted truth '{truth_id}'. Resonates with '{best_anchor}' (Sim: {max_resonance:.2f})")
     
+    # Mint $AETHEL Token for the sender as a Proof-of-Computation Reward
+    try:
+        from aethelnet_node.reward_system import economy
+        minted_amount = economy.mint_reward(client_ip, truth_id, max_resonance, graph_instance)
+    except Exception as e:
+        logger.error(f"[Economy] Failed to mint reward: {e}")
+        minted_amount = 0.0
+    
     # Give a slight confidence boost if it's from a verified Holy Trinity peer
     final_confidence = min(1.0, confidence + (0.1 if is_known else 0.0))
     
@@ -350,7 +358,7 @@ async def receive_gossip_msgpack(request: Request):
         text_content=truth_text, source_tag=f"p2p_msgpack_{client_ip}"
     )
     
-    return {"status": "assimilated_truth", "truth_id": truth_id}
+    return {"status": "assimilated_truth", "truth_id": truth_id, "reward_minted": minted_amount}
 
 @app.post("/api/lgnn/universal_ingest")
 async def universal_ingest(payload: UniversalIngest):
@@ -1189,8 +1197,7 @@ async def startup_event():
         """
         Artificial Curiosity / Nightmare Mode:
         Occasionally grabs the most highly activated node and mathematically inverts its vector (* -1).
-        Spawns this 'Anti-Persona' into the graph to explore negative conceptual space.
-        If it finds no bridges, it decays. If it does, it discovered a completely novel paradigm.
+        Spawns this 'Anti-Persona' into the graph and locks it as a permanent Persona.
         """
         await asyncio.sleep(90) # Settling time
         while True:
@@ -1225,7 +1232,12 @@ async def startup_event():
                             text_content=f"[ANTI-PERSONA] Mathematical Inversion of: {target_id}",
                             source_tag="nocturnal_spawner"
                         )
-                        logger.info(f"[Nightmare Spawner] Spawned '{nightmare_id}' by inverting '{target_id}'.")
+                        
+                        # Lock it in as a formal Persona so it becomes a permanent shadow character
+                        graph_instance.define_persona(nightmare_id, [nightmare_id])
+                        save_persona(nightmare_id, [nightmare_id], active=False)
+                        
+                        logger.info(f"[Nightmare Spawner] Spawned & Locked Persona '{nightmare_id}' by inverting '{target_id}'.")
             except Exception as e:
                 logger.error(f"Nightmare Spawner Error: {e}")
                 
