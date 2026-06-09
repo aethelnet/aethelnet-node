@@ -79,6 +79,18 @@ Your exact words will be physically ingested by the LGNN as new vectors."""
             if dream:
                 logger.info(f"[Ouroboros] LGNN is dreaming about: {dream}")
                 
+                # Render the dream to a physical file using OmniDecoder
+                from aethelnet_node.decoders.omni_decoder import UniversalOmniDecoder
+                from aethelnet_node.main import node_metrics
+                try:
+                    # Construct node dicts expected by the decoder
+                    nodes_data = [{"id": nid, "vector": node_metrics.get(nid, {}).get("vector", np.zeros(768))} for nid in dream]
+                    resonance = np.ones(len(nodes_data)) # Simplified resonance for now
+                    decoder = UniversalOmniDecoder()
+                    decoder.decode(nodes_data, resonance)
+                except Exception as e:
+                    logger.error(f"[Ouroboros] OmniDecoder failed to render: {e}")
+
                 # 2. The Coach critiques
                 feedback = await self.query_mistral_coach(dream)
                 if feedback:
