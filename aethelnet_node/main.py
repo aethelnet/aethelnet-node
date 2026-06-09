@@ -16,6 +16,7 @@ from aethelnet_node.database import (
     load_graph_state, save_persona, load_personas, get_node_text
 )
 from aethelnet_node.sensor_manager import run_sensors_from_config
+from aethelnet_node.ouroboros import OuroborosLoop
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -1061,7 +1062,7 @@ async def startup_event():
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
     asyncio.create_task(register_with_all_known_peers())
-    asyncio.create_task(workspace_file_watcher())
     asyncio.create_task(cosmic_telemetry_watcher())
     asyncio.create_task(run_sensors_from_config())
+    asyncio.create_task(OuroborosLoop().run_loop())
     logger.info("[Aethelnet Node] Startup actions completed.")

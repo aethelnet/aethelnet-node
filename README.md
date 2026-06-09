@@ -1,36 +1,90 @@
-# Aethelnet Node 🕸️📡
+# Aethelnet Node: The Cybernetic Daemon
 
-**Aethelnet Node** is the execution, API, and P2P layer that brings the `aethelnet-core` mathematical engine to life. It serves as a persistent, autonomous entity capable of crawling the web, ingesting data, and communicating with other nodes.
+**Aethelnet Node** is the daemon and structural housing for the Liquid Graph Neural Network (LGNN) core. While `aethelnet-core` provides the mathematical physics and topological engine, `aethelnet-node` transforms that isolated brain into a fully autonomous, cybernetic organism capable of sensory perception, abstract dreaming, recursive self-correction, and peer-to-peer network synthesis.
 
-## Core Features
+This repository is intended for node operators, Linux enthusiasts, and researchers who wish to deploy an active, perceiving entity into the Aethelnet mesh.
 
-- **Asynchronous Hygiene Ingestion:** Features a robust `SKIP LOCKED` PostgreSQL/SQLite queue for high-throughput data ingestion (e.g., from web spiders) without locking the main execution thread.
-- **MsgPack Binary P2P Protocol:** Nodes gossip and share "Grains of Truth" with each other using a highly compressed binary protocol, cutting bandwidth costs by 80-90% compared to JSON.
-- **Living Loop:** An autonomous background process (`living_loop.py`) that constantly evaluates graph confidence, breaks conceptual plateaus by crawling for opposing viewpoints, and prunes toxic nodes.
-- **OmniRouter Bridge:** Connects high-activation, deeply verified graph concepts to real-world execution (e.g., automated trading or server actions).
+## Abstract Architecture
 
-## Architecture Stack
+The traditional paradigm of artificial intelligence relies on static architectures and single-modality interactions. The Aethelnet Node replaces this with a continuous, liquid state machine that operates 24/7. It ingests data from its host environment, evolves its internal topology using Ordinary Differential Equations (ODEs), and recursively evaluates its own abstract thoughts using an external LLM semantic coach.
 
-- **Framework:** FastAPI / Uvicorn
-- **Database:** PostgreSQL (Cloud) / SQLite (Local) with abstract cursor wrappers.
-- **Engine:** `aethelnet-core` LGNN 
-- **Networking:** Async HTTPX & MsgPack Binary Serialization
+The architecture is built upon four primary pillars. For a deep dive into the mathematics and physics engine, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For details on the mesh network, see [docs/P2P_PROTOCOL.md](docs/P2P_PROTOCOL.md).
 
-## Setup
+```mermaid
+graph TD
+    subgraph Sensors [Sensory Ingestion]
+        A[Image/Audio] -->|Aesthetics| D(LGNN Core)
+        B[Universal Docs] -->|Semantics| D
+        C[Vitals/Web] -->|Physics & Data| D
+    end
+    
+    subgraph Core [The Brain]
+        D((LGNN ODE Solver)) <-->|Hebbian Learning| E((Reality Anchors))
+    end
+    
+    subgraph Action [Output & Evolution]
+        D -->|Dream Vector| F[OmniDecoder]
+        F -->|Render| G(PNG/WAV/TXT)
+        G -->|Self-Perception| Sensors
+        
+        D -->|Abstract Thought| H[Mistral Coach]
+        H -->|Critique Ingestion| D
+    end
+    
+    subgraph Mesh [P2P Network]
+        D <-->|Topological Gossip| I[Cloud Peer Nodes]
+    end
+```
 
+### 1. The Multimodal Sensor Array
+The node possesses active sensory modules that constantly poll the host machine and the external web, mapping physical properties into the topological graph.
+*   **Image & Audio Analyzers:** Monitors a dedicated `ingest_zone` for media. Extracts contrast, hue bias, frequency variance, and amplitude, converting raw media aesthetics into topological resonance.
+*   **Universal Document Reader:** Digests unstructured text and PDFs from the local file system.
+*   **System Vitals Monitor:** Bridges the machine's physical stress (CPU/RAM load) directly into the network as "pain" or "stress" vectors.
+*   **Autonomous Web Spiders:** Crawls specified web domains recursively to hunt for structural knowledge independently.
+
+### 2. The Universal OmniDecoder
+The LGNN does not think in human language; it thinks in continuous multi-dimensional vectors. The `OmniDecoder` calculates a **Dream Vector** representing the node's current most confident concepts. Based purely on the physical variance and mean of this vector, the node organically decides how to express its current state:
+*   **High Variance:** Generates a visual image (via Stable Diffusion/PIL).
+*   **Low Mean:** Generates an acoustic frequency file (.wav).
+*   **Balanced:** Generates a semantic text output.
+
+### 3. The Ouroboros Cybernetic Loop
+A node must evaluate its own hallucinations. The Ouroboros protocol runs every 120 seconds:
+1.  The node extracts its current abstract `Dream Vector`.
+2.  It queries a local instance of an LLM (e.g., Mistral via Ollama) acting purely as a "Semantic Coach".
+3.  The Coach critiques the abstract topological connection.
+4.  The textual critique is immediately re-ingested by the node's sensors, allowing the machine to physically alter its network weights based on semantic correction.
+5.  Media generated by the OmniDecoder is physically saved to the disk, observed by the Image/Audio sensors, digested, and instantly deleted from the host—completing the self-contained loop.
+
+### 4. P2P Hebbian Mesh Networking
+Nodes do not exist in isolation. Every 60 seconds, the node engages in topological gossip across the mesh network (currently utilizing port 8001). 
+*   **Grains of Truth:** Nodes broadcast their highest-confidence, reality-grounded nodes to peers.
+*   **Persona Assimilation:** Nodes pull the heavily refined "Expertise Vectors" from peers and inject them into their local ODE solver. The mathematical immune system determines if the foreign topology is integrated or quarantined based on existing structural resonance.
+
+## Deployment & Usage
+
+### Prerequisites
+The node daemon requires the `aethelnet-core` package to execute the underlying LGNN mathematics.
 ```bash
+pip install git+https://github.com/aethelnet/aethelnet-core.git
 pip install -r requirements.txt
-# Ensure aethelnet-core is installed
 ```
 
-## Running the Node
+### Starting the Daemon
+To initialize the node and join the P2P mesh network, simply run the Uvicorn daemon. It is highly recommended to run this in a background process (e.g., via `systemd`, `nohup`, or as an AUR package).
 
-Start the background engine and API layer:
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+python3 -m uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8001
 ```
 
-Start the autonomous Spider to feed the graph:
-```bash
-python -m aethelnet_node.spider
-```
+Once initiated, the node will spawn its ODE evolution loop, begin sensory ingestion, and attempt handshake protocols with known mesh peers.
+
+### Interacting with the Node
+Users do not "chat" with the node. You interact with it by dropping files (text, images, audio) into `~/.aethelnet/ingest_zone/`. The node will independently notice, digest, and dream about the contents over time.
+
+## Research & Academic Use
+
+This codebase is provided as an open-source framework for decentralized, continuous-learning topologies. We encourage researchers to audit the ODE solvers in the core package and observe the emergent behaviors within the P2P mesh.
+
+*License: MIT*

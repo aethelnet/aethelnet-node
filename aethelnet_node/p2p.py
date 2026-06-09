@@ -13,8 +13,7 @@ logger = logging.getLogger("LGNN.P2P")
 p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
 
 # Known peer registry (IPs or hostnames)
-# In a real mesh network, this could be discovered via UDP multicast (mDNS/Zeroconf)
-KNOWN_PEERS = ["172.20.10.10:8000", "141.147.20.191:8000", "130.61.202.29:8000", "92.5.45.124:8000"] # Pre-seeded with all nodes
+KNOWN_PEERS = ["172.20.10.10:8001", "141.147.20.191:8001", "130.61.202.29:8001", "92.5.45.124:8001"]
 
 class PeerSyncPayload(BaseModel):
     peer_id: str
