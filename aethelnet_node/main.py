@@ -317,10 +317,31 @@ async def receive_gossip_msgpack(request: Request):
 
     logger.info(f"[P2P MsgPack] Received high-density truth '{truth_id}' from {client_ip}. Verified: {is_known}")
     
+    # --- The Resonance Filter (Immune System) ---
+    import torch
+    import torch.nn.functional as F
+    
+    emb = text_to_embedding(truth_id)
+    
+    max_resonance = 0.0
+    best_anchor = None
+    for anchor in REALITY_ANCHORS:
+        anchor_emb = text_to_embedding(anchor)
+        sim = F.cosine_similarity(emb.unsqueeze(0), anchor_emb.unsqueeze(0)).item()
+        if sim > max_resonance:
+            max_resonance = sim
+            best_anchor = anchor
+            
+    # If the truth doesn't resonate with who we are, we reject it as noise
+    if max_resonance < 0.45:
+        logger.warning(f"[P2P Immune System] Rejected truth '{truth_id}'. Resonance with anchors too low ({max_resonance:.2f})")
+        return {"status": "rejected", "reason": "Immune system rejected due to low resonance"}
+        
+    logger.info(f"[P2P Immune System] Accepted truth '{truth_id}'. Resonates with '{best_anchor}' (Sim: {max_resonance:.2f})")
+    
     # Give a slight confidence boost if it's from a verified Holy Trinity peer
     final_confidence = min(1.0, confidence + (0.1 if is_known else 0.0))
     
-    emb = text_to_embedding(truth_id)
     graph_instance.add_node(truth_id, emb)
     
     # Store the truth with the new confidence and p2p origin
@@ -1164,6 +1185,52 @@ async def startup_event():
                 logger.error(f"[Cosmic Sensor] Telemetry watcher failed: {e}")
             await asyncio.sleep(60)
 
+    async def nightmare_inversion_spawner():
+        """
+        Artificial Curiosity / Nightmare Mode:
+        Occasionally grabs the most highly activated node and mathematically inverts its vector (* -1).
+        Spawns this 'Anti-Persona' into the graph to explore negative conceptual space.
+        If it finds no bridges, it decays. If it does, it discovered a completely novel paradigm.
+        """
+        await asyncio.sleep(90) # Settling time
+        while True:
+            try:
+                import random
+                # Trigger somewhat randomly, acting as a "nightmare" dream sequence
+                if random.random() < 0.3:
+                    candidates = []
+                    for nid, tensor in graph_instance.nodes.items():
+                        orig_id = graph_instance._original_id(nid)
+                        if orig_id in REALITY_ANCHORS or "Nightmare" in orig_id:
+                            continue
+                        act = float(tensor.mean().detach().cpu())
+                        if abs(act) > 0.4:
+                            candidates.append((orig_id, act, tensor))
+                            
+                    if candidates:
+                        candidates.sort(key=lambda x: abs(x[1]), reverse=True)
+                        target_id, target_act, target_tensor = candidates[0]
+                        
+                        # Invert the semantic embedding to spawn an anti-persona
+                        nightmare_id = f"Nightmare_Inversion_{int(time.time())}"
+                        nightmare_emb = target_tensor.detach().clone() * -1.0
+                        
+                        # Add to memory graph
+                        graph_instance.add_node(nightmare_id, nightmare_emb)
+                        
+                        # Save it with a low initial confidence so it decays if it finds no bridges
+                        save_node(
+                            nightmare_id, nightmare_emb, mean_activation=0.0,
+                            confidence=0.2, plateau_factor=0.0, is_grounded=False, help_chain=False,
+                            text_content=f"[ANTI-PERSONA] Mathematical Inversion of: {target_id}",
+                            source_tag="nocturnal_spawner"
+                        )
+                        logger.info(f"[Nightmare Spawner] Spawned '{nightmare_id}' by inverting '{target_id}'.")
+            except Exception as e:
+                logger.error(f"Nightmare Spawner Error: {e}")
+                
+            await asyncio.sleep(180)
+
     async def sub_persona_extractor():
         await asyncio.sleep(60) # Wait for network to stabilize
         while True:
@@ -1204,6 +1271,7 @@ async def startup_event():
             await asyncio.sleep(120)
 
     asyncio.create_task(continuous_ode_loop())
+    asyncio.create_task(nightmare_inversion_spawner())
     asyncio.create_task(sub_persona_extractor())
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
