@@ -14,7 +14,7 @@ import torch
 from aethelnet.liquid_graph import LiquidGraph
 from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
-    load_graph_state, save_persona, load_personas, get_node_text
+    load_graph_state, save_persona, load_personas, get_node_text, delete_persona
 )
 from aethelnet_node.sensor_manager import run_sensors_from_config
 from aethelnet_node.ouroboros import OuroborosLoop
@@ -1243,6 +1243,51 @@ async def startup_event():
                 
             await asyncio.sleep(180)
 
+    async def apoptosis_garbage_collector():
+        """
+        Garbage Collector (Apoptosis)
+        Cleans up nodes and Personas that have zero bridges (degree=0) and low activation,
+        preventing the 'Graveyard of Dreams' from cluttering RAM and DB.
+        """
+        await asyncio.sleep(300) # Give the network time to boot and form bridges
+        while True:
+            try:
+                dead_nodes = []
+                for nid, tensor in list(graph_instance.nodes.items()):
+                    orig_id = graph_instance._original_id(nid)
+                    if orig_id in REALITY_ANCHORS:
+                        continue
+                        
+                    act = abs(float(tensor.mean().detach().cpu()))
+                    degree = graph_instance.nx_graph.degree(orig_id) if orig_id in graph_instance.nx_graph else 0
+                    
+                    # If it's a Nightmare Persona, we are aggressive. If it's just a normal node, we are a bit more lenient
+                    is_nightmare = "Nightmare" in orig_id
+                    threshold = 0.1 if is_nightmare else 0.05
+                    
+                    if act < threshold and degree == 0:
+                        dead_nodes.append((nid, orig_id, is_nightmare))
+                        
+                for nid, orig_id, is_nightmare in dead_nodes:
+                    # Remove from RAM
+                    if nid in graph_instance.nodes:
+                        del graph_instance.nodes[nid]
+                    if orig_id in graph_instance.nx_graph:
+                        graph_instance.nx_graph.remove_node(orig_id)
+                    
+                    # Remove from DB
+                    delete_node(orig_id)
+                    if is_nightmare:
+                        delete_persona(orig_id)
+                        if orig_id in graph_instance.personas:
+                            del graph_instance.personas[orig_id]
+                            
+                    logger.info(f"[Apoptosis] Garbage Collected dead node/persona '{orig_id}'")
+            except Exception as e:
+                logger.error(f"[Apoptosis] GC Error: {e}")
+                
+            await asyncio.sleep(60)
+
     async def sub_persona_extractor():
         await asyncio.sleep(60) # Wait for network to stabilize
         while True:
@@ -1284,6 +1329,7 @@ async def startup_event():
 
     asyncio.create_task(continuous_ode_loop())
     asyncio.create_task(nightmare_inversion_spawner())
+    asyncio.create_task(apoptosis_garbage_collector())
     asyncio.create_task(sub_persona_extractor())
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
