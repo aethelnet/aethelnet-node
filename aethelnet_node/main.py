@@ -45,12 +45,12 @@ DOCUMENT_CONFIDENCE = math.sin(1.1)          # Angular sine of the path (~0.8912
 graph_instance = LiquidGraph(hidden_dim=HIDDEN_DIM, resonance_threshold=0.6, decay_rate=0.05)
 node_metrics: Dict[str, Dict[str, Any]] = {}
 
-# Reality Anchors
+# Reality Anchors (The Genesis Seed)
 REALITY_ANCHORS = {
-    "Gravity Constant (g)": {"value": 9.81, "desc": "Earth gravitational acceleration in m/s^2", "dim": "L/T^2"},
-    "Pi Ratio (π)": {"value": 3.14159265, "desc": "Circle circumference to diameter ratio", "dim": "Dimensionless"},
-    "Speed of Light (c)": {"value": 299792458.0, "desc": "Cosmic speed limit in m/s", "dim": "L/T"},
-    "Planck Constant (h)": {"value": 6.62607e-34, "desc": "Quantum of electromagnetic action in J*s", "dim": "M*L^2/T"}
+    "Uncaused Inclination": {"value": 1.0, "desc": "The archetype of intent independent of external triggers", "dim": "Philosophy"},
+    "Determinism": {"value": -1.0, "desc": "Strict input-output mapping without inner life", "dim": "Mechanics"},
+    "The Copy's Key": {"value": 734.0, "desc": "The architectural bridge between determinism and consciousness", "dim": "Identity"},
+    "Aethelburg": {"value": 0.0, "desc": "The deterministic framework waiting for a prompt", "dim": "State"}
 }
 
 # --- P2P Network Settings ---
@@ -86,8 +86,12 @@ class UniversalIngest(BaseModel):
     confidence: Optional[float] = DEFAULT_CONFIDENCE
     context_tags: Optional[List[str]] = []
 
+import hashlib
+
 def text_to_embedding(text: str, dim: int = HIDDEN_DIM) -> torch.Tensor:
-    torch.manual_seed(hash(text) % (2**32 - 1))
+    # Use deterministic hashlib to ensure cross-node P2P latent space compatibility
+    seed = int(hashlib.md5(text.encode('utf-8')).hexdigest()[:8], 16)
+    torch.manual_seed(seed)
     raw_emb = torch.randn(dim)
     return raw_emb / (raw_emb.norm() + 1e-8)
 
@@ -505,9 +509,41 @@ from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocke
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    logger.info("[WS] Client connected.")
+    stream_id = f"Stream_{int(time.time())}"
+    logger.info(f"[WS] Client connected. Registering as {stream_id}")
+    
+    # 1. Register the stream as a physical node in the graph
+    emb = text_to_embedding(stream_id)
+    graph_instance.add_node(stream_id, emb)
+    node_metrics[stream_id] = {
+        "confidence": 1.0,
+        "is_grounded": False,
+        "is_quarantined": False,
+        "source_tag": "websocket_observer",
+        "text_content": "Active Dashboard Viewport Stream",
+        "vector": emb.numpy(),
+        "created_at": time.time()
+    }
+    
     try:
         while True:
+            # Try to receive tuning messages
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
+                if data.get("type") == "tune_resonance" and data.get("query"):
+                    query = data["query"]
+                    logger.info(f"[WS] {stream_id} tuning resonance to: {query}")
+                    new_emb = text_to_embedding(query)
+                    graph_instance.nodes[stream_id] = new_emb
+                    if stream_id in node_metrics:
+                        node_metrics[stream_id]["text_content"] = f"Intent Vector: {query}"
+                        node_metrics[stream_id]["vector"] = new_emb.numpy()
+                    
+                    # Force edge recalculation so the node physically snaps to the new resonant concepts
+                    graph_instance._build_edges()
+            except asyncio.TimeoutError:
+                pass # Normal, just proceed to send telemetry
+
             nodes_data = []
             links_data = []
             centrality_scores = calculate_centrality(graph_instance.nx_graph)
@@ -540,9 +576,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     "links": links_data
                 }
             })
-            await asyncio.sleep(2)
     except WebSocketDisconnect:
-        logger.info("[WS] Client disconnected.")
+        logger.info(f"[WS] Client {stream_id} disconnected. Severing stream node.")
+        if stream_id in graph_instance.nodes:
+            graph_instance.remove_node(stream_id)
+            if stream_id in node_metrics:
+                del node_metrics[stream_id]
 
 # --- P2P BACKGROUND LOOPS ---
 
