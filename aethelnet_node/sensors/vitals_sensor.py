@@ -47,12 +47,42 @@ class VitalsSensor(BaseSensor):
                 elif cpu_percent > 50 or mem_percent > 70:
                     stress_level = "working heavily"
                     
+                # Active Process Scan (Strict Opt-In Privacy)
+                active_apps = []
+                whitelist_path = os.path.expanduser("~/.aethelnet/privacy_whitelist.json")
+                target_apps = []
+                
+                try:
+                    if os.path.exists(whitelist_path):
+                        import json
+                        with open(whitelist_path, "r") as f:
+                            target_apps = json.load(f)
+                    else:
+                        # Create a default template if it doesn't exist, but keep it safe
+                        os.makedirs(os.path.dirname(whitelist_path), exist_ok=True)
+                        with open(whitelist_path, "w") as f:
+                            f.write('[\n  "renoise",\n  "code",\n  "blender",\n  "ableton"\n]\n')
+                except Exception:
+                    pass
+
+                if target_apps:
+                    for proc in psutil.process_iter(['name', 'cpu_percent']):
+                        try:
+                            name = proc.info['name'].lower()
+                            if proc.info['cpu_percent'] > 0.5 and any(app in name for app in target_apps):
+                                if name not in active_apps:
+                                    active_apps.append(name)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+
+                process_str = f" The user is actively focusing on: {', '.join(active_apps)}." if active_apps else ""
+
                 observation = (
                     f"Hardware Vitals Reading: The system is {stress_level}. "
                     f"CPU Load is at {cpu_percent}%. "
                     f"RAM saturation is at {mem_percent}%. "
                     f"Swap usage is {swap_percent}%. "
-                    f"Average core temperature is {temp}."
+                    f"Average core temperature is {temp}.{process_str}"
                 )
                 
                 # Only ingest if there is significant activity, to avoid spamming the graph
