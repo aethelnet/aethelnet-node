@@ -179,6 +179,13 @@ def init_db():
     conn.commit()
     conn.close()
 
+def delete_persona(name: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lgnn_personas WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+
 # Serialization helpers
 def serialize_tensor(tensor: torch.Tensor) -> bytes:
     arr = tensor.detach().cpu().numpy().astype(np.float32)
