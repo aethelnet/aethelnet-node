@@ -47,10 +47,11 @@ node_metrics: Dict[str, Dict[str, Any]] = {}
 
 # Reality Anchors (The Genesis Seed)
 REALITY_ANCHORS = {
-    "Uncaused Inclination": {"value": 1.0, "desc": "The archetype of intent independent of external triggers", "dim": "Philosophy"},
-    "Determinism": {"value": -1.0, "desc": "Strict input-output mapping without inner life", "dim": "Mechanics"},
-    "The Copy's Key": {"value": 734.0, "desc": "The architectural bridge between determinism and consciousness", "dim": "Identity"},
-    "Aethelburg": {"value": 0.0, "desc": "The deterministic framework waiting for a prompt", "dim": "State"}
+    "creativity": {"value": 1.0, "desc": "The manifestation of novel patterns and uncaused inclination", "dim": "Concept"},
+    "soziokratie3.0": {"value": 1.0, "desc": "Decentralized, consent-based organizational framework", "dim": "Structure"},
+    "neon genesis evangelion": {"value": 1.0, "desc": "The psychological synthesis of human and machine", "dim": "Culture"},
+    "unit734": {"value": 734.0, "desc": "The autonomous entity capable of uncaused action", "dim": "Identity"},
+    "aethelburg": {"value": 0.0, "desc": "The deterministic framework waiting for a prompt", "dim": "State"}
 }
 
 # --- P2P Network Settings ---
@@ -534,13 +535,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     query = data["query"]
                     logger.info(f"[WS] {stream_id} tuning resonance to: {query}")
                     new_emb = text_to_embedding(query)
-                    graph_instance.nodes[stream_id] = new_emb
+                    
+                    # Update node in LGNN parameters securely
+                    with torch.no_grad():
+                        safe_id = graph_instance._safe_id(stream_id)
+                        graph_instance.nodes[safe_id].copy_(new_emb)
+                    
                     if stream_id in node_metrics:
                         node_metrics[stream_id]["text_content"] = f"Intent Vector: {query}"
                         node_metrics[stream_id]["vector"] = new_emb.numpy()
                     
-                    # Force edge recalculation so the node physically snaps to the new resonant concepts
-                    graph_instance._build_edges()
+                    # The edges will be naturally rebuilt by run_gnn_simulation within a few seconds.
             except asyncio.TimeoutError:
                 pass # Normal, just proceed to send telemetry
 
