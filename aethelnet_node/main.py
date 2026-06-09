@@ -796,6 +796,21 @@ async def get_node_details(node_id: str):
 # Track scouted queries to avoid redundant API requests
 SCOUTED_TERMS = set()
 
+@app.get("/api/lgnn/wallet")
+async def get_wallet_balance():
+    try:
+        from aethelnet_node.reward_system import economy
+        # Calculate sum of all LocalMiner wallets
+        local_balance = sum(amt for key, amt in economy.ledger.items() if key.startswith("LocalMiner_"))
+        return {
+            "status": "success",
+            "balance": round(local_balance, 6),
+            "total_supply": round(economy.total_supply, 6)
+        }
+    except Exception as e:
+        logger.error(f"[Economy] Wallet fetch failed: {e}")
+        return {"status": "error", "balance": 0.0, "total_supply": 0.0}
+
 async def autonomous_curiosity_scouter():
     await asyncio.sleep(45) # Settling time
     while True:
