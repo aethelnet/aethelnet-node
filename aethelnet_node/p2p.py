@@ -70,7 +70,7 @@ async def receive_peer_sync(payload: PeerSyncPayload):
     assimilated_count = 0
     for node_data in payload.nodes:
         # Avoid overriding our Reality Anchors
-        if node_data["id"] in ["Gravity Constant (g)", "Pi Ratio (π)", "Speed of Light (c)", "Planck Constant (h)"]:
+        if node_data["id"] in ["creativity", "soziokratie3.0", "neon genesis evangelion", "unit734", "aethelburg"]:
             continue
             
         # We wrap the incoming node in a secure payload with a strict source tag.

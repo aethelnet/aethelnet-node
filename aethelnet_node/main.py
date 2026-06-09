@@ -5,8 +5,9 @@ import os
 import socket
 import time
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
@@ -32,6 +33,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount media directory for the dashboard Content Inspector
+import os
+ingest_zone = os.path.expanduser("~/.aethelnet/ingest_zone")
+os.makedirs(ingest_zone, exist_ok=True)
+app.mount("/media", StaticFiles(directory=ingest_zone), name="media")
 
 HIDDEN_DIM = 768
 init_db()
@@ -279,6 +286,50 @@ async def receive_peer_sync(payload: PeerSyncPayload):
         
     logger.info(f"[P2P] Successfully assimilated {assimilated_count} concepts.")
     return {"status": "assimilated", "count": assimilated_count}
+
+import msgpack
+from fastapi import Request
+
+@app.post("/p2p/gossip_msgpack")
+async def receive_gossip_msgpack(request: Request):
+    """
+    The Holy Trinity Protocol: Receive compressed 'Grains of Truth' via MsgPack.
+    """
+    client_ip = request.client.host
+    # Accept if it's localhost or one of our known peers
+    is_known = client_ip in ["127.0.0.1", "localhost"] or any(client_ip in peer for peer in KNOWN_PEERS)
+    
+    body = await request.body()
+    try:
+        payload = msgpack.unpackb(body, raw=False)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid msgpack payload")
+        
+    truth_id = payload.get("truth_id")
+    truth_text = payload.get("truth_text")
+    confidence = payload.get("confidence", DEFAULT_CONFIDENCE)
+    
+    if not truth_id or not truth_text:
+        return {"status": "rejected", "reason": "Missing fields"}
+        
+    if truth_id in REALITY_ANCHORS:
+        return {"status": "rejected", "reason": "Cannot override anchors"}
+
+    logger.info(f"[P2P MsgPack] Received high-density truth '{truth_id}' from {client_ip}. Verified: {is_known}")
+    
+    # Give a slight confidence boost if it's from a verified Holy Trinity peer
+    final_confidence = min(1.0, confidence + (0.1 if is_known else 0.0))
+    
+    emb = text_to_embedding(truth_id)
+    graph_instance.add_node(truth_id, emb)
+    
+    # Store the truth with the new confidence and p2p origin
+    save_node(
+        truth_id, emb, 0.0, final_confidence, 0.0, False, False,
+        text_content=truth_text, source_tag=f"p2p_msgpack_{client_ip}"
+    )
+    
+    return {"status": "assimilated_truth", "truth_id": truth_id}
 
 @app.post("/api/lgnn/universal_ingest")
 async def universal_ingest(payload: UniversalIngest):
@@ -673,17 +724,29 @@ async def gossip_truth_to_peers():
         if grain_of_truth_id:
             truth_text = get_node_text(grain_of_truth_id)
             hostname = socket.gethostname()
+            
+            import msgpack
             payload = {
-                "bot_name": f"lgnn_gossip_{hostname}",
-                "observation": f"[{grain_of_truth_id}] {truth_text}",
-                "confidence": node_metrics[grain_of_truth_id].get("confidence", DEFAULT_CONFIDENCE),
-                "context_tags": ["p2p_gossip"]
+                "truth_id": grain_of_truth_id,
+                "truth_text": f"[{hostname}] {truth_text}",
+                "confidence": node_metrics[grain_of_truth_id].get("confidence", DEFAULT_CONFIDENCE)
             }
+            packed_payload = msgpack.packb(payload, use_bin_type=True)
+            
             async with httpx.AsyncClient(timeout=5.0) as client:
                 for peer in KNOWN_PEERS:
-                    peer_url = f"http://{peer}/api/lgnn/universal_ingest"
+                    if peer.startswith("127.0.0.1") or peer.startswith("localhost"):
+                        continue
+                        
+                    peer_url = f"http://{peer}/p2p/gossip_msgpack"
                     try:
-                        await client.post(peer_url, json=payload)
+                        resp = await client.post(
+                            peer_url, 
+                            content=packed_payload, 
+                            headers={"Content-Type": "application/msgpack"}
+                        )
+                        if resp.status_code == 200:
+                            logger.info(f"[P2P MsgPack] Successfully gossiped truth '{grain_of_truth_id}' to {peer}.")
                     except Exception:
                         pass
         await asyncio.sleep(60)
@@ -1101,7 +1164,47 @@ async def startup_event():
                 logger.error(f"[Cosmic Sensor] Telemetry watcher failed: {e}")
             await asyncio.sleep(60)
 
+    async def sub_persona_extractor():
+        await asyncio.sleep(60) # Wait for network to stabilize
+        while True:
+            try:
+                # Find the most highly activated node that isn't a reality anchor or already a persona base
+                highest_activation = 0.0
+                thought_seed = None
+                
+                for nid in list(graph_instance.nodes.keys()):
+                    orig_id = graph_instance._original_id(nid)
+                    if orig_id in REALITY_ANCHORS or "gossip" in orig_id or "Thought_" in orig_id:
+                        continue
+                    
+                    state_tensor = graph_instance.nodes[nid]
+                    mean_act = float(state_tensor.mean().detach().cpu())
+                    
+                    if mean_act > highest_activation:
+                        highest_activation = mean_act
+                        thought_seed = orig_id
+                        
+                # If we have a very intense thought, extract its neighborhood as a Persona
+                if thought_seed and highest_activation > 0.65:
+                    if thought_seed in graph_instance.nx_graph:
+                        neighbors = list(graph_instance.nx_graph.neighbors(thought_seed))
+                        cluster = [thought_seed] + neighbors
+                        
+                        if len(cluster) >= 4:
+                            persona_name = f"Thought_{hashlib.md5(thought_seed.encode()).hexdigest()[:8]}"
+                            
+                            # Only define if not already defined
+                            if persona_name not in graph_instance.personas:
+                                logger.info(f"[Persona Extractor] Extracted Cryptographic Sub-Graph '{persona_name}' from seed '{thought_seed}' (Act: {highest_activation:.2f})")
+                                graph_instance.define_persona(persona_name, cluster)
+                                save_persona(persona_name, cluster, active=False) # Keep dormant until invoked
+            except Exception as e:
+                logger.error(f"[Persona Extractor] Failed: {e}")
+                
+            await asyncio.sleep(120)
+
     asyncio.create_task(continuous_ode_loop())
+    asyncio.create_task(sub_persona_extractor())
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
