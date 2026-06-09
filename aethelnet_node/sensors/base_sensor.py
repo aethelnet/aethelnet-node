@@ -28,7 +28,7 @@ class BaseSensor:
             "context_tags": tags
         }
         
-        target_url = os.getenv("AETHELNET_NODE_URL", "http://127.0.0.1:8000/api/lgnn/universal_ingest")
+        target_url = os.getenv("AETHELNET_NODE_URL", "http://127.0.0.1:8001/api/lgnn/universal_ingest")
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
