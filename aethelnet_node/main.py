@@ -14,7 +14,8 @@ import torch
 from aethelnet.liquid_graph import LiquidGraph
 from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
-    load_graph_state, save_persona, load_personas, get_node_text, delete_persona
+    load_graph_state, save_persona, load_personas, get_node_text, delete_persona,
+    get_db_connection
 )
 from aethelnet_node.sensor_manager import run_sensors_from_config
 from aethelnet_node.ouroboros import OuroborosLoop
@@ -74,6 +75,12 @@ class NodeCreate(BaseModel):
     source_tag: Optional[str] = "internal"
     is_quarantined: Optional[bool] = False
 
+class NodeUpdate(BaseModel):
+    id: str
+    text_content: str
+    source_tag: Optional[str] = None
+    is_quarantined: Optional[bool] = None
+
 class PeerSyncPayload(BaseModel):
     peer_id: str
     nodes: List[Dict[str, Any]]
@@ -88,20 +95,96 @@ class EvolveTextRequest(BaseModel):
     text: str
     iterations: int = 1
 
+class PersonaToggle(BaseModel):
+    name: str
+    active: bool
+
+class PersonaCreate(BaseModel):
+    name: str
+    nodes: List[str]
+
+class SensorPayload(BaseModel):
+    sensor_id: str
+    observation_id: str
+    text: str
+    confidence: float
+    raw_data: Dict[str, Any]
+
+class ActiveProcessMonitor:
+    """Scans running system processes to understand what the user is focusing on."""
+    def __init__(self):
+        self.last_state = ""
+        
+    def poll(self) -> Optional[SensorPayload]:
+        try:
+            import psutil
+            active_apps = []
+            # Common creative/dev apps we want to track
+            target_apps = ['renoise', 'code', 'firefox', 'chrome', 'blender', 'obs', 'terminal', 'uvicorn', 'python']
+            
+            for proc in psutil.process_iter(['name', 'cpu_percent']):
+                try:
+                    name = proc.info['name'].lower()
+                    if proc.info['cpu_percent'] > 1.0 and any(app in name for app in target_apps):
+                        if name not in active_apps:
+                            active_apps.append(name)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+                    
+            if not active_apps:
+                return None
+                
+            state_str = f"Active focus apps detected: {', '.join(active_apps)}"
+            if state_str != self.last_state:
+                self.last_state = state_str
+                return SensorPayload(
+                    sensor_id="ProcessVitalsMonitor",
+                    observation_id=f"Obs_ProcessVitals_{int(time.time())}",
+                    text=f"Process Vitals Reading: The user is currently operating the following high-CPU applications: {', '.join(active_apps)}. Cognitive focus is directed here.",
+                    confidence=0.8,
+                    raw_data={"active_apps": active_apps}
+                )
+        except Exception as e:
+            logger.error(f"[ProcessVitals] Failed to poll: {e}")
+        return None
+
 class UniversalIngest(BaseModel):
     bot_name: str
     observation: str
     confidence: Optional[float] = DEFAULT_CONFIDENCE
     context_tags: Optional[List[str]] = []
+    media_b64: Optional[str] = None
+    media_type: Optional[str] = None
 
 import hashlib
 
+import torch.nn.functional as F
+
+try:
+    from sentence_transformers import SentenceTransformer
+    import logging
+    logger = logging.getLogger("LGNN")
+    logger.info("Loading SentenceTransformer model (all-MiniLM-L6-v2)...")
+    _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    logger.info("SentenceTransformer loaded successfully.")
+except ImportError:
+    _embedding_model = None
+
 def text_to_embedding(text: str, dim: int = HIDDEN_DIM) -> torch.Tensor:
-    # Use deterministic hashlib to ensure cross-node P2P latent space compatibility
-    seed = int(hashlib.md5(text.encode('utf-8')).hexdigest()[:8], 16)
-    torch.manual_seed(seed)
-    raw_emb = torch.randn(dim)
-    return raw_emb / (raw_emb.norm() + 1e-8)
+    if _embedding_model is not None:
+        raw_emb = _embedding_model.encode(text, convert_to_tensor=True).cpu()
+        if raw_emb.shape[0] >= dim:
+            sliced_emb = raw_emb[:dim]
+        else:
+            sliced_emb = F.pad(raw_emb, (0, dim - raw_emb.shape[0]))
+        return F.normalize(sliced_emb, p=2, dim=0)
+    else:
+        # Use deterministic hashlib to ensure cross-node P2P latent space compatibility
+        import hashlib
+        seed = int(hashlib.md5(text.encode('utf-8')).hexdigest()[:8], 16)
+        torch.manual_seed(seed)
+        raw_emb = torch.randn(dim)
+        return raw_emb / (raw_emb.norm() + 1e-8)
 
 def load_all_from_db():
     global node_metrics
@@ -361,16 +444,91 @@ async def receive_gossip_msgpack(request: Request):
     return {"status": "assimilated_truth", "truth_id": truth_id, "reward_minted": minted_amount}
 
 @app.post("/api/lgnn/universal_ingest")
-async def universal_ingest(payload: UniversalIngest):
-    logger.info(f"[Universal Ingest] Observation received: {payload.observation}")
+async def universal_ingest(payload: UniversalIngest, background_tasks: BackgroundTasks):
+    logger.info(f"[Universal Ingest] Observation received from {payload.bot_name}: {payload.observation}")
+    
+    if payload.bot_name == "AethelSpider_ArXiv":
+        # Launch real data-hunting spider in background
+        background_tasks.add_task(deploy_arxiv_spider, payload.observation)
+        return {"status": "deployed_spider", "target": payload.observation}
+        
     emb = text_to_embedding(payload.observation)
     node_id = f"Obs_{payload.bot_name}_{int(time.time())}"
+    
+    # Save media if present
+    if payload.media_b64:
+        try:
+            import base64
+            import uuid
+            ext = ".png"
+            if payload.media_type and "jpeg" in payload.media_type: ext = ".jpg"
+            elif payload.media_type and "gif" in payload.media_type: ext = ".gif"
+            
+            filename = f"upload_{uuid.uuid4().hex[:8]}{ext}"
+            filepath = os.path.join(ingest_zone, filename)
+            
+            with open(filepath, "wb") as f:
+                f.write(base64.b64decode(payload.media_b64))
+                
+            payload.observation += f" [Media Attached: /media/{filename}]"
+            node_metrics[node_id] = {"media_path": filepath}
+            logger.info(f"[Universal Ingest] Saved media to {filepath}")
+        except Exception as e:
+            logger.error(f"[Universal Ingest] Failed to save media: {e}")
+
     graph_instance.add_node(node_id, emb)
     save_node(
         node_id, emb, 0.0, payload.confidence, 0.0, False, False, 
         text_content=payload.observation, source_tag=payload.bot_name
     )
-    return {"status": "ingested", "node_id": node_id}
+    
+    # Reward the system/user for ingesting a truth
+    from aethelnet_node.reward_system import economy
+    minted_amount = economy.mint_reward(
+        peer_identifier=payload.bot_name,
+        truth_id=node_id,
+        resonance_score=payload.confidence,
+        graph_instance=graph_instance
+    )
+    
+    return {"status": "ingested", "node_id": node_id, "reward_minted": minted_amount}
+
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+
+def deploy_arxiv_spider(query: str):
+    logger.info(f"[AethelSpider] Deploying into arXiv for: {query}")
+    try:
+        url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&start=0&max_results=5"
+        with urllib.request.urlopen(url) as response:
+            data = response.read()
+            
+        root = ET.fromstring(data)
+        namespace = {'atom': 'http://www.w3.org/2005/Atom'}
+        
+        count = 0
+        for entry in root.findall('atom:entry', namespace):
+            title = entry.find('atom:title', namespace).text.strip().replace('\n', ' ')
+            summary = entry.find('atom:summary', namespace).text.strip().replace('\n', ' ')
+            author = entry.find('atom:author/atom:name', namespace).text
+            
+            node_text = f"ArXiv Paper: {title} by {author}. Summary: {summary}"
+            
+            emb = text_to_embedding(node_text)
+            # Create a dedicated Spider node so it gets the yellow styling in the frontend
+            node_id = f"Spider_ArXiv_{int(time.time())}_{count}"
+            graph_instance.add_node(node_id, emb)
+            save_node(
+                node_id, emb, 0.0, 0.85, 0.0, False, False,
+                text_content=node_text, source_tag="AethelSpider_ArXiv"
+            )
+            count += 1
+            
+        logger.info(f"[AethelSpider] Assimilated {count} papers into the LGNN.")
+        
+    except Exception as e:
+        logger.error(f"[AethelSpider] Hunt failed: {str(e)}")
 
 @app.post("/api/lgnn/node")
 async def create_node_route(payload: NodeCreate):
@@ -382,6 +540,68 @@ async def create_node_route(payload: NodeCreate):
         is_quarantined=payload.is_quarantined
     )
     return {"status": "created", "id": payload.id}
+
+@app.post("/api/lgnn/node/update")
+async def update_node_route(payload: NodeUpdate):
+    safe_id = graph_instance._safe_id(payload.id)
+    if safe_id not in graph_instance.nodes:
+        raise HTTPException(status_code=404, detail="Node not found")
+        
+    emb = text_to_embedding(payload.text_content)
+    with torch.no_grad():
+        graph_instance.nodes[safe_id].copy_(emb)
+        
+    if payload.id in node_metrics:
+        node_metrics[payload.id]["text_content"] = payload.text_content
+        node_metrics[payload.id]["vector"] = emb.numpy()
+        if payload.source_tag is not None:
+            node_metrics[payload.id]["source_tag"] = payload.source_tag
+        if payload.is_quarantined is not None:
+            node_metrics[payload.id]["is_quarantined"] = payload.is_quarantined
+            
+    # Update SQLite database
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE lgnn_nodes SET text_content = ?, vector = ?, source_tag = coalesce(?, source_tag), is_quarantined = coalesce(?, is_quarantined) WHERE id = ?",
+        (payload.text_content, emb.numpy().tobytes(), payload.source_tag, 1 if payload.is_quarantined else 0, safe_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    return {"status": "success", "message": f"Node {payload.id} updated"}
+
+@app.get("/api/lgnn/personas")
+async def get_personas_route():
+    result = []
+    for p_name, p_nodes in graph_instance.personas.items():
+        if p_name.startswith("Nightmare_Inversion_"):
+            continue # Skip cluttering the UI with hundreds of shadow personas
+        result.append({
+            "name": p_name,
+            "active": graph_instance.active_personas.get(p_name, False),
+            "nodes": p_nodes
+        })
+    return result
+
+@app.post("/api/lgnn/persona/toggle")
+async def toggle_persona_route(payload: PersonaToggle):
+    if payload.name not in graph_instance.personas:
+        raise HTTPException(status_code=404, detail="Persona not found")
+    
+    # Toggle state
+    graph_instance.set_persona_active(payload.name, payload.active)
+    save_persona(payload.name, graph_instance.personas[payload.name], active=payload.active)
+    
+    return {"status": "success", "persona": payload.name, "active": payload.active}
+
+@app.post("/api/lgnn/persona/create")
+async def create_persona_route(payload: PersonaCreate):
+    if not payload.name:
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    graph_instance.define_persona(payload.name, payload.nodes)
+    save_persona(payload.name, payload.nodes, active=False)
+    return {"status": "success", "persona": payload.name}
 
 @app.post("/api/lgnn/generate-response")
 async def generate_response_endpoint(data: GenerateResponseRequest):
@@ -626,6 +846,48 @@ async def websocket_endpoint(websocket: WebSocket):
                         node_metrics[stream_id]["vector"] = new_emb.numpy()
                     
                     # The edges will be naturally rebuilt by run_gnn_simulation within a few seconds.
+                
+                elif data.get("type") == "create_link":
+                    src = graph_instance._safe_id(data["source"])
+                    tgt = graph_instance._safe_id(data["target"])
+                    if src in graph_instance.nodes and tgt in graph_instance.nodes:
+                        graph_instance.nx_graph.add_edge(src, tgt, weight=1.0)
+                        save_edge(src, tgt, 1.0)  # Persist to DB
+                        logger.info(f"[WS] Manual link created: {src} <-> {tgt}")
+                        
+                elif data.get("type") == "delete_nodes":
+                    for node_id in data.get("nodes", []):
+                        safe_id = graph_instance._safe_id(node_id)
+                        if safe_id in graph_instance.nodes:
+                            del graph_instance.nodes[safe_id]
+                        if graph_instance.nx_graph.has_node(safe_id):
+                            graph_instance.nx_graph.remove_node(safe_id)
+                        delete_node(safe_id)  # Persist deletion to DB
+                        logger.info(f"[WS] Manual prune: Node {safe_id} deleted")
+                        
+                elif data.get("type") == "toggle_privacy":
+                    for node_id in data.get("nodes", []):
+                        safe_id = graph_instance._safe_id(node_id)
+                        if safe_id in node_metrics:
+                            current = node_metrics[safe_id].get("is_public", True)
+                            new_state = not current
+                            node_metrics[safe_id]["is_public"] = new_state
+                            
+                            # Fetch current node state to save it back
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE lgnn_nodes SET is_public = ? WHERE id = ?", (1 if new_state else 0, safe_id))
+                            conn.commit()
+                            conn.close()
+                            logger.info(f"[WS] Toggled Privacy for {safe_id} to {'Public' if new_state else 'Private'}")
+                            
+                elif data.get("type") == "update_params":
+                    if "decay_rate" in data:
+                        graph_instance.decay_rate = float(data["decay_rate"])
+                        logger.info(f"[WS] Dynamic update: decay_rate set to {graph_instance.decay_rate}")
+                    if "resonance_threshold" in data:
+                        graph_instance.resonance_threshold = float(data["resonance_threshold"])
+                        logger.info(f"[WS] Dynamic update: resonance_threshold set to {graph_instance.resonance_threshold}")
             except asyncio.TimeoutError:
                 pass # Normal, just proceed to send telemetry
 
@@ -645,16 +907,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     "label": orig_id, 
                     "activation": mean_act,
                     "is_leader": (orig_id == leader_node),
-                    "centrality": centrality_scores.get(orig_id, 0.0)
+                    "centrality": centrality_scores.get(orig_id, 0.0),
+                    "is_public": node_metrics.get(orig_id, {}).get("is_public", True),
+                    "text_content": node_metrics.get(orig_id, {}).get("text_content", ""),
+                    "parent_id": node_metrics.get(orig_id, {}).get("parent_id", "root")
                 })
             for u, v, data in graph_instance.nx_graph.edges(data=True):
-                links_data.append({"source": u, "target": v, "weight": data.get("weight", 1.0)})
+                orig_u = graph_instance._original_id(u)
+                orig_v = graph_instance._original_id(v)
+                links_data.append({"source": orig_u, "target": orig_v, "weight": data.get("weight", 1.0)})
                 
+            from aethelnet_node.reward_system import economy
+            local_balance = sum(amt for key, amt in economy.ledger.items() if key.startswith("LocalMiner_"))
+
             await websocket.send_json({
                 "type": "telemetry",
                 "nodes": len(nodes_data),
                 "bridges": len(links_data),
                 "state": "Active",
+                "balance": local_balance,
                 "leader": leader_node if leader_node else "None",
                 "graph": {
                     "nodes": nodes_data,
@@ -781,17 +1052,62 @@ async def gossip_truth_to_peers():
         await asyncio.sleep(60)
 
 @app.get("/api/lgnn/node/{node_id}")
-async def get_node_details(node_id: str):
+async def get_node_details(node_id: str, format: str = "AUTO"):
     text = get_node_text(node_id)
     safe_id = graph_instance._safe_id(node_id)
     metrics = node_metrics.get(safe_id, {})
-    return {
+    
+    response_data = {
         "id": node_id,
         "text_content": text,
         "confidence": metrics.get("confidence", DEFAULT_CONFIDENCE),
         "source_tag": metrics.get("source_tag", "internal"),
-        "is_grounded": metrics.get("is_grounded", False)
+        "is_grounded": metrics.get("is_grounded", False),
+        "format": "TXT"
     }
+
+    if format != "AUTO":
+        try:
+            from aethelnet_node.decoders.omni_decoder import UniversalOmniDecoder
+            import numpy as np
+            import base64
+            
+            decoder = UniversalOmniDecoder()
+            # Construct a fake "persona" consisting only of this node
+            vector = graph_instance.nodes[safe_id].vector if safe_id in graph_instance.nodes else np.random.randn(512)
+            nodes = [{"id": node_id, "vector": vector}]
+            resonance = np.array([1.0])
+            
+            filepath = ""
+            
+            # If the node already has media attached from an upload, use it!
+            if safe_id in node_metrics and "media_path" in node_metrics[safe_id]:
+                filepath = node_metrics[safe_id]["media_path"]
+                response_data["format"] = "IMG"
+            elif format == "IMG":
+                filepath = decoder._render_image(vector, nodes)
+                response_data["format"] = "IMG"
+            elif format == "WAV":
+                filepath = decoder._render_audio(vector)
+                response_data["format"] = "WAV"
+            elif format == "TXT":
+                filepath = decoder._render_text(vector, nodes)
+                response_data["format"] = "TXT"
+            
+            # Read the generated file and return it as base64
+            if filepath and os.path.exists(filepath):
+                with open(filepath, "rb") as f:
+                    file_bytes = f.read()
+                    b64_str = base64.b64encode(file_bytes).decode("utf-8")
+                    response_data["media_b64"] = b64_str
+                    
+                if format == "TXT":
+                    response_data["text_content"] = file_bytes.decode("utf-8")
+                    
+        except Exception as e:
+            logger.error(f"[OmniDecoder] Failed to decode format {format}: {e}")
+            
+    return response_data
 
 # Track scouted queries to avoid redundant API requests
 SCOUTED_TERMS = set()
@@ -1342,7 +1658,38 @@ async def startup_event():
                 
             await asyncio.sleep(120)
 
+    async def entropy_injector_loop():
+        await asyncio.sleep(30) # Settling time
+        while True:
+            try:
+                centrality = calculate_centrality(graph_instance.nx_graph)
+                if centrality:
+                    protected = set(graph_instance._safe_id(a) for a in REALITY_ANCHORS.keys())
+                    candidates = [(n, s) for n, s in centrality.items() if s > 0.3 and n not in protected]
+                    
+                    if candidates:
+                        candidates.sort(key=lambda x: x[1], reverse=True)
+                        target, score = candidates[0]
+                        edges = list(graph_instance.nx_graph.edges(target))
+                        
+                        if len(edges) > 1:
+                            import random
+                            prune_count = max(1, len(edges) // 2)
+                            edges_to_prune = random.sample(edges, prune_count)
+                            
+                            for u, v in edges_to_prune:
+                                graph_instance.nx_graph.remove_edge(u, v)
+                                delete_edge(u, v)
+                                
+                            logger.warning(f"[Entropy Injector] Pruned {prune_count} edges from dominant hub '{target}' (Centrality {score:.3f}). Mode collapse averted.")
+                            await asyncio.sleep(60) # Cooldown to let the swarm physics resettle
+            except Exception as e:
+                logger.error(f"[Entropy Injector] Failed: {e}")
+                
+            await asyncio.sleep(10) # Reactive monitoring: check every 10 seconds
+
     asyncio.create_task(continuous_ode_loop())
+    asyncio.create_task(entropy_injector_loop())
     asyncio.create_task(nightmare_inversion_spawner())
     asyncio.create_task(apoptosis_garbage_collector())
     asyncio.create_task(sub_persona_extractor())
