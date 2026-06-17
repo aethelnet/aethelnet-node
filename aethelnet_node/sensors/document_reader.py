@@ -45,10 +45,10 @@ class DocumentReaderSensor(BaseSensor):
             logger.error(f"[{self.name}] Directory {self.directory} not found.")
             return
 
-        valid_exts = {".txt", ".md", ".csv", ".json"}
+        valid_exts = {".txt", ".md", ".csv", ".json", ".py", ".js", ".vue", ".html", ".css"}
         files_to_process = []
         
-        for root, _, files in os.walk(self.directory):
+        for root, _, files in os.walk(self.directory, followlinks=True):
             for f in files:
                 if os.path.splitext(f)[1].lower() in valid_exts:
                     full_path = os.path.join(root, f)

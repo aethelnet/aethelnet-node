@@ -57,16 +57,73 @@ class UniversalOmniDecoder:
         logger.info("[OmniDecoder] Low mean detected. Rendering topological AUDIO...")
         import wave
         import struct
+        import glob
+        
+        # Auto-Pruning: Keep only the 50 most recent dreams to avoid disk filling
+        existing_wavs = sorted(glob.glob(os.path.join(self.output_dir, "omni_dream_*.wav")))
+        while len(existing_wavs) > 50:
+            try:
+                os.remove(existing_wavs.pop(0))
+            except:
+                break
+
+        energy = np.linalg.norm(dream_vector)
+        # Prevent 1-second spam when there is no activity
+        if energy < 0.05:
+            logger.info("[OmniDecoder] Topology too quiet. Skipping audio generation.")
+            return None
+
         filepath = os.path.join(self.output_dir, f"omni_dream_{int(time.time())}.wav")
-        # Generate simple sine wave based on vector
-        freq = 440.0 + (np.mean(dream_vector) * 1000)
+        
+        # 1. Base Frequency (Ambient Drone, lower pitch: 40-100Hz)
+        base_freq = 40.0 + (np.abs(np.mean(dream_vector)) * 60)
+        
+        # 2. Duration (Minimum 3 seconds, up to 15)
+        duration = max(3.0, min(15.0, energy * 5.0))
+        num_frames = int(44100 * duration)
+        
+        # 3. Harmonics based on the first few vector elements
+        h1 = np.abs(dream_vector[0]) if len(dream_vector) > 0 else 0.5
+        h2 = np.abs(dream_vector[1]) if len(dream_vector) > 1 else 0.5
+        h3 = np.abs(dream_vector[2]) if len(dream_vector) > 2 else 0.5
+        
+        # 4. Tremolo (Wobble) speed based on variance
+        variance = np.var(dream_vector)
+        tremolo_speed = 0.5 + (variance * 10.0) # Slower, more relaxing wobble
+        
         with wave.open(filepath, 'w') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(44100)
-            for i in range(44100):
-                value = int(32767.0 * np.sin(2.0 * np.pi * freq * i / 44100.0))
-                wav_file.writeframes(struct.pack('<h', value))
+            
+            # Generate audio buffer
+            audio_data = bytearray()
+            for i in range(num_frames):
+                t = i / 44100.0
+                
+                # Fade-in and Fade-out envelope (Ambient Swell)
+                envelope = 1.0
+                if t < 1.0:
+                    envelope = t  # 1 second fade in
+                elif t > duration - 1.0:
+                    envelope = duration - t # 1 second fade out
+
+                # Base sine
+                wave_val = np.sin(2.0 * np.pi * base_freq * t)
+                # Add harmonics (overtones)
+                wave_val += (h1 * 0.5) * np.sin(2.0 * np.pi * (base_freq * 2) * t)
+                wave_val += (h2 * 0.25) * np.sin(2.0 * np.pi * (base_freq * 3) * t)
+                wave_val += (h3 * 0.125) * np.sin(2.0 * np.pi * (base_freq * 4) * t)
+                
+                # Apply tremolo (amplitude modulation)
+                tremolo = 0.7 + 0.3 * np.sin(2.0 * np.pi * tremolo_speed * t)
+                
+                # Normalize and apply envelope
+                wave_val = (wave_val / 1.875) * tremolo * envelope
+                value = int(32767.0 * max(-1.0, min(1.0, wave_val)))
+                audio_data.extend(struct.pack('<h', value))
+                
+            wav_file.writeframes(audio_data)
         return filepath
 
     def _render_text(self, dream_vector: np.ndarray, nodes: List[Dict[str, Any]]):
