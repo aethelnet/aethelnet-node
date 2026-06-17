@@ -50,11 +50,12 @@ class UniversalDocumentSensor(BaseSensor):
             logger.error(f"[{self.name}] Directory {self.directory} not found.")
             return
 
-        # Expanded list of formats that unstructured can handle
-        valid_exts = {".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".eml", ".html", ".epub"}
+        # [MOBILE DATA MODE] Restricted to lightweight local code/text. 
+        # Heavy binary extraction (.pdf, .docx, etc.) is delegated to the Oracle Servers (141).
+        valid_exts = {".txt", ".md", ".csv", ".json", ".py", ".js", ".vue", ".html", ".css"}
         files_to_process = []
         
-        for root, _, files in os.walk(self.directory):
+        for root, _, files in os.walk(self.directory, followlinks=True):
             for f in files:
                 if os.path.splitext(f)[1].lower() in valid_exts:
                     full_path = os.path.join(root, f)

@@ -4,15 +4,84 @@ import numpy as np
 import torch
 import os
 from typing import Dict, Any, List, Tuple
+from dotenv import load_dotenv
+
+load_dotenv()
+DB_PROVIDER = os.getenv("DB_PROVIDER", "sqlite").lower()
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
 
+class PostgresCursorWrapper:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def execute(self, query, params=None):
+        # PostgreSQL uses %s instead of ? for placeholders
+        query = query.replace("?", "%s")
+        # Handle SQLite's BLOB vs Postgres BYTEA
+        if "BLOB" in query:
+            query = query.replace("BLOB", "BYTEA")
+        if "INTEGER PRIMARY KEY AUTOINCREMENT" in query:
+            query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        try:
+            return self.cursor.execute(query, params)
+        except Exception as e:
+            # Fallback to rollback on error so transaction isn't aborted
+            self.cursor.connection.rollback()
+            raise e
+
+    def executemany(self, query, params_list):
+        query = query.replace("?", "%s")
+        if "BLOB" in query:
+            query = query.replace("BLOB", "BYTEA")
+        if "INTEGER PRIMARY KEY AUTOINCREMENT" in query:
+            query = query.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+        try:
+            return self.cursor.executemany(query, params_list)
+        except Exception as e:
+            self.cursor.connection.rollback()
+            raise e
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+    def close(self):
+        self.cursor.close()
+
+    @property
+    def rowcount(self):
+        return self.cursor.rowcount
+
+class PostgresConnectionWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def cursor(self):
+        return PostgresCursorWrapper(self.conn.cursor())
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+        
+    def close(self):
+        self.conn.close()
+
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.row_factory = sqlite3.Row
-    return conn
+    if DB_PROVIDER == "postgresql" and DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import DictCursor
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+        return PostgresConnectionWrapper(conn)
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
     """
@@ -28,34 +97,62 @@ def init_db():
         embedding BLOB NOT NULL,
         text_content TEXT DEFAULT '',
         mean_activation REAL DEFAULT 0.0,
-        confidence REAL DEFAULT 0.6180339887,
+        confidence REAL DEFAULT 0.8,
         plateau_factor REAL DEFAULT 0.0,
         is_grounded INTEGER DEFAULT 0,
         help_chain INTEGER DEFAULT 0,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    conn.commit()
     
     # Run dynamic migration if column doesn't exist
     try:
         cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN text_content TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+        conn.commit()
+    except Exception:
+        conn.rollback()
         
     try:
         cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN is_archived INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
+        conn.commit()
+    except Exception:
+        conn.rollback()
         
     try:
         cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN source_tag TEXT DEFAULT 'internal'")
-    except sqlite3.OperationalError:
-        pass
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
     try:
         cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN is_quarantined INTEGER DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN x REAL")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN y REAL")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN fx REAL")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN fy REAL")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN color TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN node_type TEXT DEFAULT 'standard'")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN meta_data TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
 
     # Create Commits Table for Git-like version tracking of snapshots
     cursor.execute("""
@@ -67,7 +164,8 @@ def init_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
-
+    conn.commit()
+    
     # Create Commit Nodes Table to store embeddings and states for each commit
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS lgnn_commit_nodes (
@@ -87,6 +185,7 @@ def init_db():
         FOREIGN KEY (commit_hash) REFERENCES lgnn_commits(hash) ON DELETE CASCADE
     )
     """)
+    conn.commit()
 
     # Create Commit Edges Table to store edges for each commit snapshot
     cursor.execute("""
@@ -99,6 +198,7 @@ def init_db():
         FOREIGN KEY (commit_hash) REFERENCES lgnn_commits(hash) ON DELETE CASCADE
     )
     """)
+    conn.commit()
     
     # Create Edges Table
     cursor.execute("""
@@ -111,6 +211,7 @@ def init_db():
         FOREIGN KEY (target) REFERENCES lgnn_nodes(id) ON DELETE CASCADE
     )
     """)
+    conn.commit()
     
     # Create Kanban Columns Table
     cursor.execute("""
@@ -120,6 +221,7 @@ def init_db():
         sort_order INTEGER DEFAULT 0
     )
     """)
+    conn.commit()
     
     # Create Kanban Cards Table
     cursor.execute("""
@@ -134,6 +236,7 @@ def init_db():
         FOREIGN KEY (node_ref) REFERENCES lgnn_nodes(id) ON DELETE SET NULL
     )
     """)
+    conn.commit()
     
     # Create Agent Registry Tables
     cursor.execute("""
@@ -143,6 +246,18 @@ def init_db():
         last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+    conn.commit()
+    
+    # 🚀 MASS-INGESTION QUEUE (PostgreSQL native Queue via SKIP LOCKED)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lgnn_ingest_queue (
+        id SERIAL PRIMARY KEY,
+        payload TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
     
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS agent_cooperation_log (
@@ -155,6 +270,7 @@ def init_db():
         FOREIGN KEY (agent_id) REFERENCES agent_registry(agent_id) ON DELETE CASCADE
     )
     """)
+    conn.commit()
     
     # Create Persona Table
     cursor.execute("""
@@ -179,13 +295,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-def delete_persona(name: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM lgnn_personas WHERE name = ?", (name,))
-    conn.commit()
-    conn.close()
-
 # Serialization helpers
 def serialize_tensor(tensor: torch.Tensor) -> bytes:
     arr = tensor.detach().cpu().numpy().astype(np.float32)
@@ -198,13 +307,13 @@ def deserialize_tensor(blob: bytes, dim: int = 128) -> torch.Tensor:
         arr = np.resize(arr, (dim,))
     return torch.tensor(arr)
 
-def save_node(node_id: str, embedding: torch.Tensor, mean_activation: float, confidence: float, plateau_factor: float, is_grounded: bool, help_chain: bool, text_content: str = "", is_archived: bool = False, source_tag: str = "internal", is_quarantined: bool = False):
+def save_node(node_id: str, embedding: torch.Tensor, mean_activation: float, confidence: float, plateau_factor: float, is_grounded: bool, help_chain: bool, text_content: str = "", is_archived: bool = False, source_tag: str = "internal", is_quarantined: bool = False, node_type: str = "standard", meta_data: str = "{}"):
     conn = get_db_connection()
     cursor = conn.cursor()
     emb_bytes = serialize_tensor(embedding)
     cursor.execute("""
-    INSERT INTO lgnn_nodes (id, embedding, text_content, mean_activation, confidence, plateau_factor, is_grounded, help_chain, is_archived, source_tag, is_quarantined, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO lgnn_nodes (id, embedding, text_content, mean_activation, confidence, plateau_factor, is_grounded, help_chain, is_archived, source_tag, is_quarantined, node_type, meta_data, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
         embedding = excluded.embedding,
         text_content = excluded.text_content,
@@ -216,8 +325,10 @@ def save_node(node_id: str, embedding: torch.Tensor, mean_activation: float, con
         is_archived = excluded.is_archived,
         source_tag = excluded.source_tag,
         is_quarantined = excluded.is_quarantined,
+        node_type = excluded.node_type,
+        meta_data = excluded.meta_data,
         last_updated = CURRENT_TIMESTAMP
-    """, (node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor, 1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0, source_tag, 1 if is_quarantined else 0))
+    """, (node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor, 1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0, source_tag, 1 if is_quarantined else 0, node_type, meta_data))
     conn.commit()
     conn.close()
 
@@ -227,6 +338,84 @@ def delete_node(node_id: str):
     cursor.execute("DELETE FROM lgnn_nodes WHERE id = ?", (node_id,))
     conn.commit()
     conn.close()
+
+def update_node_physics(nodes_physics: List[Dict[str, Any]]):
+    if not nodes_physics:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Execute batch update
+    query = """
+        UPDATE lgnn_nodes 
+        SET x = ?, y = ?, fx = ?, fy = ?, color = COALESCE(?, color)
+        WHERE id = ?
+    """
+    params = [
+        (n.get("x"), n.get("y"), n.get("fx"), n.get("fy"), n.get("color"), n.get("id"))
+        for n in nodes_physics if n.get("id")
+    ]
+    cursor.executemany(query, params)
+    conn.commit()
+    conn.close()
+
+# =====================================================================
+# ASYNC HYGIENE MASS INGESTION (POSTGRESQL QUEUE)
+# =====================================================================
+def enqueue_observation(payload_json: str):
+    """Puts an observation into the Postgres Queue for background processing."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO lgnn_ingest_queue (payload, status) VALUES (?, 'pending')", (payload_json,))
+    conn.commit()
+    conn.close()
+
+def dequeue_observation():
+    """Pops an observation from the Postgres Queue using SKIP LOCKED to prevent race conditions."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # The 'SKIP LOCKED' trick turns Postgres into a highly scalable Message Queue (like Redis/Kafka)
+    # It ensures multiple FastAPI workers don't grab the same grain.
+    query = """
+    UPDATE lgnn_ingest_queue 
+    SET status = 'processing' 
+    WHERE id = (
+        SELECT id FROM lgnn_ingest_queue 
+        WHERE status = 'pending' 
+        ORDER BY created_at ASC 
+        LIMIT 1 
+        FOR UPDATE SKIP LOCKED
+    ) RETURNING id, payload;
+    """
+    
+    try:
+        cursor.execute(query)
+        row = cursor.fetchone()
+        if row:
+            conn.commit()
+            conn.close()
+            return row['id'], row['payload']
+    except Exception as e:
+        # Fallback for SQLite which doesn't support RETURNING or SKIP LOCKED in older versions
+        cursor.execute("SELECT id, payload FROM lgnn_ingest_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            cursor.execute("UPDATE lgnn_ingest_queue SET status = 'processing' WHERE id = ?", (row['id'],))
+            conn.commit()
+            conn.close()
+            return row['id'], row['payload']
+            
+    conn.commit()
+    conn.close()
+    return None, None
+
+def mark_observation_done(job_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE lgnn_ingest_queue SET status = 'done' WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
 
 def save_edge(source: str, target: str, weight: float):
     # Enforce alphabetical ordering of source/target to prevent duplicate bidirectional keys
@@ -262,12 +451,20 @@ def load_graph_state(dim: int = 128) -> Tuple[Dict[str, torch.Tensor], List[Tupl
         nid = row["id"]
         nodes[nid] = deserialize_tensor(row["embedding"], dim)
         metrics[nid] = {
+            "mean_activation": row["mean_activation"],
             "confidence": row["confidence"],
             "plateau_factor": row["plateau_factor"],
             "is_grounded": bool(row["is_grounded"]),
             "help_chain": bool(row["help_chain"]),
             "source_tag": row["source_tag"] if "source_tag" in row.keys() else "internal",
-            "is_quarantined": bool(row["is_quarantined"]) if "is_quarantined" in row.keys() else False
+            "is_quarantined": bool(row["is_quarantined"]) if "is_quarantined" in row.keys() else False,
+            "node_type": row["node_type"] if "node_type" in row.keys() else "standard",
+            "meta_data": row["meta_data"] if "meta_data" in row.keys() else "{}",
+            "x": row["x"] if "x" in row.keys() else None,
+            "y": row["y"] if "y" in row.keys() else None,
+            "fx": row["fx"] if "fx" in row.keys() else None,
+            "fy": row["fy"] if "fy" in row.keys() else None,
+            "color": row["color"] if "color" in row.keys() else None
         }
         
     # Load Edges
@@ -316,6 +513,38 @@ def get_node_text(node_id: str) -> str:
     if row:
         return row["text_content"] or ""
     return ""
+
+def get_all_node_texts() -> dict:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, text_content FROM lgnn_nodes")
+    rows = cursor.fetchall()
+    conn.close()
+    return {r["id"]: (r["text_content"] or "") for r in rows}
+
+def get_node_visuals(node_id: str) -> dict:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT x, y, fx, fy, color FROM lgnn_nodes WHERE id = ?", (node_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"x": row["x"], "y": row["y"], "fx": row["fx"], "fy": row["fy"], "color": row["color"]}
+    return {}
+
+def get_all_node_visuals() -> dict:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, x, y, fx, fy, color FROM lgnn_nodes")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    res = {}
+    for r in rows:
+        res[r["id"]] = {
+            "x": r["x"], "y": r["y"], "fx": r["fx"], "fy": r["fy"], "color": r["color"]
+        }
+    return res
 
 def save_kanban_card(card_id: str, column_id: str, title: str, description: str, tags: List[str], node_ref: str = None):
     conn = get_db_connection()

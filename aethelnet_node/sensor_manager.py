@@ -2,21 +2,32 @@ import os
 import yaml
 import logging
 import asyncio
-from aethelnet_node.sensors.web_spider import WebSpiderSensor
-from aethelnet_node.sensors.audio_analyzer import AudioAnalyzerSensor
-from aethelnet_node.sensors.universal_document_reader import UniversalDocumentSensor
-from aethelnet_node.sensors.image_analyzer import ImageAnalyzerSensor
-from aethelnet_node.sensors.vitals_sensor import VitalsSensor
+try:
+    from aethelnet_node.sensors.web_spider import WebSpiderSensor
+    from aethelnet_node.sensors.audio_analyzer import AudioAnalyzerSensor
+    from aethelnet_node.sensors.document_reader import DocumentReaderSensor
+    from aethelnet_node.sensors.image_analyzer import ImageAnalyzerSensor
+    from aethelnet_node.sensors.universal_document_reader import UniversalDocumentSensor
+    from aethelnet_node.sensors.vitals_sensor import VitalsSensor
+    SENSORS_AVAILABLE = True
+except ImportError as e:
+    import logging
+    logging.warning(f"Some sensor dependencies are missing. Sensors disabled: {e}")
+    SENSORS_AVAILABLE = False
 
 logger = logging.getLogger("Aethelnet.SensorManager")
 
-SENSOR_REGISTRY = {
-    "web_spider": WebSpiderSensor,
-    "audio": AudioAnalyzerSensor,
-    "document": UniversalDocumentSensor,
-    "image": ImageAnalyzerSensor,
-    "vitals": VitalsSensor
-}
+if SENSORS_AVAILABLE:
+    SENSOR_REGISTRY = {
+        "web_spider": WebSpiderSensor,
+        "audio_analyzer": AudioAnalyzerSensor,
+        "document_reader": DocumentReaderSensor,
+        "image_analyzer": ImageAnalyzerSensor,
+        "universal_document_reader": UniversalDocumentSensor,
+        "vitals_sensor": VitalsSensor
+    }
+else:
+    SENSOR_REGISTRY = {}
 
 async def run_sensors_from_config():
     """Reads sensors.yaml and starts all configured sensors asynchronously."""
@@ -37,7 +48,10 @@ async def run_sensors_from_config():
             return
             
         for config in configs:
-            sensor_type = config.get("type")
+           for sensor_type, cfg in config.get("sensors", {}).items():
+            if not SENSORS_AVAILABLE:
+                logger.warning(f"Skipping sensor {sensor_type} due to missing dependencies.")
+                continue
             if sensor_type in SENSOR_REGISTRY:
                 sensor_class = SENSOR_REGISTRY[sensor_type]
                 sensor_instance = sensor_class(config)
