@@ -9,6 +9,9 @@ try:
     from aethelnet_node.sensors.image_analyzer import ImageAnalyzerSensor
     from aethelnet_node.sensors.universal_document_reader import UniversalDocumentSensor
     from aethelnet_node.sensors.vitals_sensor import VitalsSensor
+    from aethelnet_node.sensors.weather_sensor import WeatherSensor
+    from aethelnet_node.sensors.space_sensor import SpaceSensor
+    from aethelnet_node.sensors.entropy_sensor import EntropySensor
     SENSORS_AVAILABLE = True
 except ImportError as e:
     import logging
@@ -24,7 +27,10 @@ if SENSORS_AVAILABLE:
         "document_reader": DocumentReaderSensor,
         "image_analyzer": ImageAnalyzerSensor,
         "universal_document_reader": UniversalDocumentSensor,
-        "vitals_sensor": VitalsSensor
+        "vitals_sensor": VitalsSensor,
+        "weather_sensor": WeatherSensor,
+        "space_sensor": SpaceSensor,
+        "entropy_sensor": EntropySensor
     }
 else:
     SENSOR_REGISTRY = {}
@@ -47,17 +53,33 @@ async def run_sensors_from_config():
             logger.error("[SensorManager] sensors.yaml must contain a list of sensor configurations.")
             return
             
-        for config in configs:
-           for sensor_type, cfg in config.get("sensors", {}).items():
-            if not SENSORS_AVAILABLE:
-                logger.warning(f"Skipping sensor {sensor_type} due to missing dependencies.")
+        for cfg in configs:
+            if not isinstance(cfg, dict):
                 continue
-            if sensor_type in SENSOR_REGISTRY:
-                sensor_class = SENSOR_REGISTRY[sensor_type]
-                sensor_instance = sensor_class(config)
+            sensor_type = cfg.get("type")
+            
+            # Map simple types to registry names
+            type_mapping = {
+                "audio": "audio_analyzer",
+                "document": "document_reader",
+                "image": "image_analyzer",
+                "vitals": "vitals_sensor",
+                "web_spider": "web_spider",
+                "weather": "weather_sensor",
+                "space": "space_sensor",
+                "entropy": "entropy_sensor"
+            }
+            mapped_type = type_mapping.get(sensor_type, sensor_type)
+            
+            if not SENSORS_AVAILABLE:
+                logger.warning(f"Skipping sensor {mapped_type} due to missing dependencies.")
+                continue
+            if mapped_type in SENSOR_REGISTRY:
+                sensor_class = SENSOR_REGISTRY[mapped_type]
+                sensor_instance = sensor_class(cfg)
                 tasks.append(asyncio.create_task(sensor_instance.run()))
             else:
-                logger.error(f"[SensorManager] Unknown sensor type: {sensor_type}")
+                logger.error(f"[SensorManager] Unknown sensor type: {sensor_type} ({mapped_type})")
                 
     except Exception as e:
         logger.error(f"[SensorManager] Failed to load sensors: {e}")
