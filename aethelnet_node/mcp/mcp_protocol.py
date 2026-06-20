@@ -1,8 +1,8 @@
 from typing import Dict, Any, List
 import logging
-from backend.lgnn.database import load_graph_state, load_kanban_board, get_node_text
-from backend.lgnn.command_runner import run_command_safely
-from backend.lgnn.research_scouter import scout_arxiv_optimizations
+from aethelnet_node.database import load_graph_state, load_kanban_board, get_node_text
+from aethelnet_node.command_runner import run_command_safely
+from aethelnet_node.research_scouter import scout_arxiv_optimizations
 
 logger = logging.getLogger("LGNN.MCP")
 
@@ -157,7 +157,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         elif name == "lgnn_perceive_environment":
-            from backend.lgnn.sensors import SensorArray
+            from aethelnet_node.sensors import SensorArray
             sensors = SensorArray()
             file_path = arguments.get("file_path", "")
             if file_path.lower().endswith('.pdf'):

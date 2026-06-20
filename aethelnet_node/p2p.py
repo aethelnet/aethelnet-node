@@ -34,7 +34,7 @@ async def extract_expertise():
     Returns the most refined, highly-resonant concepts from this node's topology.
     This acts as 'compressed wisdom' for other nodes.
     """
-    from backend.routers.lgnn import node_metrics, graph_instance
+    from aethelnet_node.main import node_metrics, graph_instance
     
     # Sort nodes by confidence
     sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
@@ -65,7 +65,7 @@ async def receive_peer_sync(payload: PeerSyncPayload):
     """
     logger.info(f"[P2P] Receiving topological sync from peer {payload.peer_id}...")
     
-    from backend.routers.lgnn import create_node, NodeCreate
+    from aethelnet_node.main import create_node, NodeCreate
     
     assimilated_count = 0
     for node_data in payload.nodes:
@@ -106,8 +106,8 @@ async def hunt_for_peers():
                         expert_nodes = data.get("nodes", [])
                         logger.info(f"[P2P] Discovered {len(expert_nodes)} high-confidence concepts from {peer}. Assimilating as Persona...")
                         
-                        from backend.routers.lgnn import create_node, NodeCreate, graph_instance
-                        from backend.lgnn.database import save_persona
+                        from aethelnet_node.main import create_node, NodeCreate, graph_instance
+                        from aethelnet_node.database import save_persona
                         
                         persona_name = f"Expertise_{peer.replace(':', '_')}"
                         persona_node_ids = []
@@ -144,8 +144,8 @@ async def gossip_truth_to_peers():
     await asyncio.sleep(30) # Offset from the hunting loop
     
     while True:
-        from backend.routers.lgnn import node_metrics
-        from backend.lgnn.database import get_node_text
+        from aethelnet_node.main import node_metrics
+        from aethelnet_node.database import get_node_text
         
         # Find our single deepest truth that is NOT a reality anchor
         sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
