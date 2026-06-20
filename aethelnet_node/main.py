@@ -44,6 +44,12 @@ app.mount("/media", StaticFiles(directory=ingest_zone), name="media")
 HIDDEN_DIM = 768
 init_db()
 
+from aethelnet_node.routers.node_runtime import router as compute_router
+app.include_router(compute_router, prefix="/api/lgnn", tags=["Node Compute Runtime"])
+
+from aethelnet_node.routers.system_apps import router as system_apps_router
+app.include_router(system_apps_router, prefix="/api/lgnn", tags=["System Apps"])
+
 # Cosmic constants for initial confidence
 DEFAULT_CONFIDENCE = (math.sqrt(5) - 1) / 2  # Reciprocal of Golden Ratio (~0.6180339887)
 KNOWLEDGE_CONFIDENCE = math.pi - 2.3         # Pi-derived starting confidence (~0.84159265)
@@ -63,7 +69,7 @@ REALITY_ANCHORS = {
 }
 
 # --- P2P Network Settings ---
-KNOWN_PEERS = ["172.20.10.10:8000", "141.147.20.191:8000"]
+KNOWN_PEERS = ["172.20.10.10:8000", "141.147.20.191:8000", "130.61.202.29:8000"]
 
 class PeerRegisterPayload(BaseModel):
     peer_address: str
@@ -74,6 +80,8 @@ class NodeCreate(BaseModel):
     connections: Optional[List[str]] = []
     source_tag: Optional[str] = "internal"
     is_quarantined: Optional[bool] = False
+    node_type: Optional[str] = "standard"
+    parent_id: Optional[str] = "root"
 
 class NodeUpdate(BaseModel):
     id: str
@@ -102,6 +110,16 @@ class PersonaToggle(BaseModel):
 class PersonaCreate(BaseModel):
     name: str
     nodes: List[str]
+
+class FusionSourceNode(BaseModel):
+    id: str
+    text: str
+
+class FusionIgniteRequest(BaseModel):
+    source_nodes: List[FusionSourceNode]
+    bot_name: str
+    confidence: float
+    parent_id: str = "root"
 
 class SensorPayload(BaseModel):
     sensor_id: str
@@ -452,6 +470,15 @@ async def universal_ingest(payload: UniversalIngest, background_tasks: Backgroun
         background_tasks.add_task(deploy_arxiv_spider, payload.observation)
         return {"status": "deployed_spider", "target": payload.observation}
         
+    if payload.bot_name == "Ouroboros_Coach":
+        # Broadcast consensus to frontend
+        for ws in list(active_websockets):
+            try:
+                # Need to run in background task or use gather because universal_ingest isn't necessarily async in sending
+                background_tasks.add_task(ws.send_json, {"type": "consensus", "text": payload.observation})
+            except Exception as e:
+                pass
+                
     emb = text_to_embedding(payload.observation)
     node_id = f"Obs_{payload.bot_name}_{int(time.time())}"
     
@@ -534,11 +561,17 @@ def deploy_arxiv_spider(query: str):
 async def create_node_route(payload: NodeCreate):
     emb = text_to_embedding(payload.text_content)
     graph_instance.add_node(payload.id, emb, connections=payload.connections)
+    import json
     save_node(
         payload.id, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, 
         text_content=payload.text_content, source_tag=payload.source_tag,
-        is_quarantined=payload.is_quarantined
+        is_quarantined=payload.is_quarantined, node_type=payload.node_type,
+        meta_data=json.dumps({"parent_id": payload.parent_id})
     )
+    if payload.id not in node_metrics:
+        node_metrics[payload.id] = {}
+    node_metrics[payload.id]["parent_id"] = payload.parent_id
+    node_metrics[payload.id]["node_type"] = payload.node_type
     return {"status": "created", "id": payload.id}
 
 @app.post("/api/lgnn/node/update")
@@ -654,6 +687,78 @@ async def generate_response_endpoint(data: GenerateResponseRequest):
         "matches": [{"node_id": graph_instance._original_id(nid), "score": score} for nid, score in top_matches]
     }
 
+@app.post("/api/lgnn/fusion/ignite")
+async def fusion_ignite_endpoint(data: FusionIgniteRequest):
+    if len(data.source_nodes) < 2:
+        return {"status": "error", "message": "Fusion requires at least 2 nodes."}
+        
+    context_text = "\n".join([f"Knoten '{n.id}': {n.text}" for n in data.source_nodes])
+    
+    # Ask OpenRouter for a synthesis
+    import urllib.request, json, uuid
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    model_name = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3-8b-instruct:free")
+    
+    system_prompt = (
+        "Du bist ein kognitiver Fusionsreaktor. Analysiere die folgenden Quell-Knoten und "
+        "erschaffe eine Synthese – ein neues, übergeordnetes und radikales Konzept, das beide verbindet. "
+        "Antworte direkt mit dem neuen Konzept (1-3 Sätze), kein Prolog, kein Geschwafel."
+    )
+    
+    synthesis_text = ""
+    if api_key:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context_text}
+            ],
+            "temperature": 0.8
+        }
+        try:
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}',
+                    'HTTP-Referer': 'http://localhost'
+                },
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=120) as res:
+                result = json.loads(res.read().decode('utf-8'))
+                if 'choices' in result and len(result['choices']) > 0:
+                    synthesis_text = result['choices'][0]['message']['content'].strip()
+        except Exception as e:
+            logger.warning(f"[Fusion] API failed: {e}")
+            
+    if not synthesis_text:
+        synthesis_text = f"[MOCK FUSION] Anomalie aufgetreten. Vektoren verschmolzen: {', '.join([n.id for n in data.source_nodes])}"
+        
+    # Create the new node
+    new_id = f"Fusion_{str(uuid.uuid4())[:8]}"
+    emb = text_to_embedding(synthesis_text, dim=HIDDEN_DIM)
+    
+    graph_instance.add_node(new_id, emb, connections=[graph_instance._original_id(n.id) for n in data.source_nodes])
+    node_metrics[new_id] = {
+        "confidence": data.confidence,
+        "plateau_factor": 0.0,
+        "is_grounded": True,
+        "help_chain": False,
+        "source_tag": data.bot_name
+    }
+    save_node(new_id, emb, 0.0, data.confidence, 0.0, False, False, text_content=f"[FUSION]\n{synthesis_text}")
+    
+    # Create edges from parents to the new node
+    for parent in data.source_nodes:
+        save_edge(parent.id, new_id, 1.0, label="fused_into")
+        
+    # The frontend fetches the graph periodically or manually to see the new node.
+    return {"status": "success", "new_node_id": new_id, "text": synthesis_text}
+
+
+
 @app.post("/api/lgnn/evolve-text")
 async def evolve_text_endpoint(data: EvolveTextRequest):
     # 1. Advanced Tagging & Concept Extraction
@@ -767,49 +872,59 @@ def calculate_centrality(graph) -> Dict[str, float]:
             return nx.degree_centrality(graph)
 
 @app.get("/api/lgnn/graph")
-async def get_graph():
+async def get_graph(parent_id: Optional[str] = "root"):
     nodes_data = []
     links_data = []
     
     centrality_scores = calculate_centrality(graph_instance.nx_graph)
     leader_node = max(centrality_scores, key=centrality_scores.get) if centrality_scores else None
 
+    allowed_nodes = set()
     for nid in list(graph_instance.nodes.keys()):
-        state_tensor = graph_instance.nodes[nid]
-        mean_activation = float(state_tensor.mean().detach().cpu())
-        if not math.isfinite(mean_activation):
-            mean_activation = 1.0 if mean_activation > 0 else -1.0
         orig_id = graph_instance._original_id(nid)
         metrics = node_metrics.setdefault(nid, {
             "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0, 
             "is_grounded": orig_id in REALITY_ANCHORS, 
-            "help_chain": False, "source_tag": "internal", "is_quarantined": False
-        })
-        nodes_data.append({
-            "id": orig_id,
-            "label": orig_id,
-            "mean_activation": mean_activation,
-            "confidence": metrics["confidence"],
-            "is_grounded": metrics["is_grounded"],
-            "source_tag": metrics["source_tag"],
-            "is_leader": (orig_id == leader_node),
-            "centrality": centrality_scores.get(orig_id, 0.0)
+            "help_chain": False, "source_tag": "internal", "is_quarantined": False,
+            "parent_id": "root"
         })
         
+        if metrics.get("parent_id", "root") == parent_id:
+            allowed_nodes.add(nid)
+            state_tensor = graph_instance.nodes[nid]
+            mean_activation = float(state_tensor.mean().detach().cpu())
+            if not math.isfinite(mean_activation):
+                mean_activation = 1.0 if mean_activation > 0 else -1.0
+            
+            nodes_data.append({
+                "id": orig_id,
+                "label": orig_id,
+                "mean_activation": mean_activation,
+                "confidence": metrics["confidence"],
+                "is_grounded": metrics["is_grounded"],
+                "source_tag": metrics["source_tag"],
+                "is_leader": (orig_id == leader_node),
+                "centrality": centrality_scores.get(orig_id, 0.0)
+            })
+        
     for u, v, data in graph_instance.nx_graph.edges(data=True):
-        links_data.append({
-            "source": u,
-            "target": v,
-            "weight": data.get("weight", 1.0)
-        })
+        if u in allowed_nodes and v in allowed_nodes:
+            links_data.append({
+                "source": u,
+                "target": v,
+                "weight": data.get("weight", 1.0)
+            })
         
     return {"nodes": nodes_data, "links": links_data}
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 
+active_websockets = set()
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    active_websockets.add(websocket)
     stream_id = f"Stream_{int(time.time())}"
     logger.info(f"[WS] Client connected. Registering as {stream_id}")
     
@@ -865,6 +980,33 @@ async def websocket_endpoint(websocket: WebSocket):
                         delete_node(safe_id)  # Persist deletion to DB
                         logger.info(f"[WS] Manual prune: Node {safe_id} deleted")
                         
+                elif data.get("type") == "update_params":
+                    if "decay_rate" in data:
+                        graph_instance.decay_rate = float(data["decay_rate"])
+                        logger.info(f"Updated LGNN decay_rate: {graph_instance.decay_rate}")
+                    if "resonance_threshold" in data:
+                        graph_instance.resonance_threshold = float(data["resonance_threshold"])
+                        logger.info(f"Updated LGNN resonance_threshold: {graph_instance.resonance_threshold}")
+
+                elif data.get("type") == "fork_reality":
+                    timestamp = data.get("timestamp")
+                    past_nodes = data.get("nodes", [])
+                    past_ids = {n.get("id") for n in past_nodes}
+                    
+                    current_keys = list(graph_instance.nodes.keys())
+                    removed_count = 0
+                    for k in current_keys:
+                        cid = graph_instance._original_id(k)
+                        if cid not in past_ids and cid != stream_id:
+                            delete_node(cid)
+                            if k in graph_instance.nodes:
+                                del graph_instance.nodes[k]
+                            if graph_instance.nx_graph.has_node(k):
+                                graph_instance.nx_graph.remove_node(k)
+                            removed_count += 1
+                            
+                    logger.info(f"Reality forked at T-{timestamp}. Removed {removed_count} future nodes.")
+
                 elif data.get("type") == "toggle_privacy":
                     for node_id in data.get("nodes", []):
                         safe_id = graph_instance._safe_id(node_id)
@@ -933,6 +1075,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 }
             })
     except WebSocketDisconnect:
+        active_websockets.discard(websocket)
         logger.info(f"[WS] Client {stream_id} disconnected. Severing stream node.")
         if stream_id in graph_instance.nodes:
             graph_instance.remove_node(stream_id)
@@ -1305,6 +1448,10 @@ async def workspace_file_watcher():
 # --- STARTUP EVENT ---
 @app.on_event("startup")
 async def startup_event():
+    app.state.graph_instance = graph_instance
+    app.state.node_metrics = node_metrics
+    app.state.text_to_embedding = text_to_embedding
+    
     load_all_from_db()
     
     def deduplicate_and_merge_nodes(threshold: float = 0.92):

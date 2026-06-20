@@ -73,6 +73,12 @@ Nodes do not exist in isolation. Every 60 seconds, the node engages in topologic
 *   **Grains of Truth:** Nodes broadcast their highest-confidence, reality-grounded nodes to peers.
 *   **Persona Assimilation:** Nodes pull the heavily refined "Expertise Vectors" from peers and inject them into their local ODE solver. The mathematical immune system determines if the foreign topology is integrated or quarantined based on existing structural resonance.
 
+### 7. Node-as-a-Service (NaaS) & System Apps
+The Monadic Core is not just a passive observer; it is an active runtime environment that can execute code and gather intelligence on demand.
+*   **NaaS Sandbox (`/api/lgnn/naas/`)**: Inject Python or Lua scripts directly into the graph. The node executes the code, captures the console output, and semantically weaves the results back into its topological memory.
+*   **Web Spider (`/api/lgnn/spider/crawl`)**: Direct the core to autonomously crawl any URL. It will extract DOM structures, headings, and metadata, planting them as a fresh sub-graph in your local manifold.
+*   **Macro Execution (`/api/lgnn/macro/execute`)**: Trigger automated sequences and complex research chains that evolve the graph topology rapidly over time.
+
 ## Deployment & Usage
 
 ### Prerequisites
