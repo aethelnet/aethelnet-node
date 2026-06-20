@@ -4,3 +4,4 @@ from .audio_analyzer import AudioAnalyzerSensor
 from .universal_document_reader import UniversalDocumentSensor
 from .image_analyzer import ImageAnalyzerSensor
 from .vitals_sensor import VitalsSensor
+from .sensor_array import SensorArray

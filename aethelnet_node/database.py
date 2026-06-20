@@ -647,6 +647,13 @@ def save_persona(name: str, node_ids: List[str], active: bool):
     conn.commit()
     conn.close()
 
+def delete_persona(name: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lgnn_personas WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+
 def load_personas() -> Tuple[Dict[str, List[str]], Dict[str, bool]]:
     conn = get_db_connection()
     cursor = conn.cursor()

@@ -60,3 +60,18 @@
     - "encryption"
     - "privacy"
     - "security"
+
+- type: weather
+  name: WeatherSensor_Berlin
+  interval: 180
+  lat: 52.52
+  lon: 13.41
+  location_name: "Berlin"
+
+- type: space
+  name: SpaceSensor_ISS
+  interval: 240
+
+- type: entropy
+  name: EntropySensor_Chaos
+  interval: 120
