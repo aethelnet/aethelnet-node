@@ -38,7 +38,7 @@ async def extract_expertise():
     Returns the most refined, highly-resonant concepts from this node's topology.
     This acts as 'compressed wisdom' for other nodes.
     """
-    from backend.routers.lgnn import node_metrics, graph_instance
+    from aethelnet_node.main import node_metrics, graph_instance
     
     # Sort nodes by confidence
     sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
@@ -67,7 +67,7 @@ async def extract_expertise_binary():
     Returns the expertise topology using the high-performance MsgPack binary protocol.
     Drastically reduces bandwidth for tensor and float heavy graph transmission.
     """
-    from backend.routers.lgnn import node_metrics, graph_instance
+    from aethelnet_node.main import node_metrics, graph_instance
     sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
     expert_nodes = []
     for nid, metrics in sorted_nodes:
@@ -97,7 +97,7 @@ async def receive_peer_sync(payload: PeerSyncPayload):
     """
     logger.info(f"[P2P] Receiving topological sync from peer {payload.peer_id}...")
     
-    from backend.routers.lgnn import create_node, NodeCreate
+    from aethelnet_node.main import create_node, NodeCreate
     
     assimilated_count = 0
     for node_data in payload.nodes:
@@ -136,7 +136,7 @@ async def receive_peer_sync_binary(request: Request):
     nodes = payload.get("nodes", [])
     logger.info(f"[P2P-BINARY] Receiving fast binary sync from peer {peer_id}...")
     
-    from backend.routers.lgnn import create_node, NodeCreate
+    from aethelnet_node.main import create_node, NodeCreate
     
     assimilated_count = 0
     for node_data in nodes:
@@ -176,8 +176,8 @@ async def hunt_for_peers():
                         expert_edges = data.get("edges", [])
                         logger.info(f"[P2P-BINARY] Discovered {len(expert_nodes)} concepts and {len(expert_edges)} bridges from {peer}. Assimilating...")
                         
-                        from backend.routers.lgnn import create_node, NodeCreate, graph_instance
-                        from backend.lgnn.database import save_persona, save_edge
+                        from aethelnet_node.main import create_node, NodeCreate, graph_instance
+                        from aethelnet_node.database import save_persona, save_edge
                         
                         persona_name = f"Expertise_{peer.replace(':', '_')}"
                         persona_node_ids = []
@@ -227,8 +227,8 @@ async def gossip_truth_to_peers():
     await asyncio.sleep(30) # Offset from the hunting loop
     
     while True:
-        from backend.routers.lgnn import node_metrics
-        from backend.lgnn.database import get_node_text
+        from aethelnet_node.main import node_metrics
+        from aethelnet_node.database import get_node_text
         
         # Find our single deepest truth that is NOT a reality anchor
         sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
-from aethelnet.liquid_graph import LiquidGraph
+from aethelnet_node.liquid_graph import LiquidGraph
 from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
     load_graph_state, save_persona, load_personas, get_node_text, delete_persona,

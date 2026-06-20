@@ -115,7 +115,7 @@ def get_public_gossip():
     
     # Now pull the REAL subagent gossip from the LGNN core (lgnn.db)
     try:
-        from backend.lgnn.database import get_db_connection as get_lgnn_db
+        from aethelnet_node.database import get_db_connection as get_lgnn_db
         lgnn_conn = get_lgnn_db()
         # Find all nodes injected by peers (source_tag starts with p2p_)
         for row in lgnn_conn.execute("SELECT id, text_content, source_tag FROM lgnn_nodes WHERE source_tag LIKE 'p2p_%' AND source_tag NOT LIKE '%expertise%' ORDER BY last_updated DESC LIMIT 20"):
