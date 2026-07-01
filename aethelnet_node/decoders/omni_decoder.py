@@ -12,7 +12,9 @@ class UniversalOmniDecoder:
     and organically decides which physical format (Image, Audio, or Text) best 
     represents the current topology.
     """
-    def __init__(self, output_dir: str = "/home/nikahrlyn/.aethelnet/ingest_zone/dreams"):
+    def __init__(self, output_dir: str = None):
+        if output_dir is None:
+            output_dir = os.path.expanduser("~/.aethelnet/ingest_zone/dreams")
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
 

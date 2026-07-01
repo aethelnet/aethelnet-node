@@ -17,8 +17,10 @@ class DiffusionImageDecoder(BaseGraphDecoder):
     """
     Decodes the LGNN Dream Vector into an actual visual image using Stable Diffusion.
     """
-    def __init__(self, name: str = "StableDiffusion_Decoder", output_dir: str = "/home/nikahrlyn/.aethelnet/ingest_zone"):
+    def __init__(self, name: str = "StableDiffusion_Decoder", output_dir: str = None):
         super().__init__(name)
+        if output_dir is None:
+            output_dir = os.path.expanduser("~/.aethelnet/ingest_zone")
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         

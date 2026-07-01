@@ -14,4 +14,5 @@ fi
 
 # 2. Start the Uvicorn Server
 echo "🌐 Starting Uvicorn Server..."
+source .venv/bin/activate
 uvicorn aethelnet_node.main:app --host 0.0.0.0 --port $PORT --reload

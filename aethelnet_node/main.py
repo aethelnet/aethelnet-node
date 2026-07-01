@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import torch
 
-from aethelnet_node.liquid_graph import LiquidGraph
+from aethelnet.liquid_graph import LiquidGraph
 from aethelnet_node.database import (
     init_db, save_node, delete_node, save_edge, delete_edge,
     load_graph_state, save_persona, load_personas, get_node_text, delete_persona,
@@ -569,9 +569,22 @@ async def create_node_route(payload: NodeCreate):
         meta_data=json.dumps({"parent_id": payload.parent_id})
     )
     if payload.id not in node_metrics:
-        node_metrics[payload.id] = {}
-    node_metrics[payload.id]["parent_id"] = payload.parent_id
-    node_metrics[payload.id]["node_type"] = payload.node_type
+        node_metrics[payload.id] = {
+            "confidence": DEFAULT_CONFIDENCE,
+            "plateau_factor": 0.0,
+            "is_grounded": False,
+            "help_chain": False,
+            "source_tag": payload.source_tag,
+            "is_quarantined": payload.is_quarantined,
+            "parent_id": payload.parent_id,
+            "node_type": payload.node_type,
+            "meta_data": json.dumps({"parent_id": payload.parent_id}),
+            "text_content": payload.text_content
+        }
+    else:
+        node_metrics[payload.id]["parent_id"] = payload.parent_id
+        node_metrics[payload.id]["node_type"] = payload.node_type
+        node_metrics[payload.id]["source_tag"] = payload.source_tag
     return {"status": "created", "id": payload.id}
 
 @app.post("/api/lgnn/node/update")
@@ -603,6 +616,36 @@ async def update_node_route(payload: NodeUpdate):
     conn.close()
     
     return {"status": "success", "message": f"Node {payload.id} updated"}
+
+class EdgeUpdate(BaseModel):
+    weight: float
+
+@app.put("/api/lgnn/edge/{source}/{target}")
+async def update_edge_route(source: str, target: str, payload: EdgeUpdate):
+    s_safe = graph_instance._safe_id(source)
+    t_safe = graph_instance._safe_id(target)
+    if s_safe in graph_instance.nx_graph and t_safe in graph_instance.nx_graph[s_safe]:
+        graph_instance.nx_graph[s_safe][t_safe]['weight'] = payload.weight
+        save_edge(s_safe, t_safe, payload.weight)
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="Edge not found")
+
+@app.delete("/api/lgnn/edge/{source}/{target}")
+async def delete_edge_route(source: str, target: str):
+    s_safe = graph_instance._safe_id(source)
+    t_safe = graph_instance._safe_id(target)
+    if s_safe in graph_instance.nx_graph and t_safe in graph_instance.nx_graph[s_safe]:
+        graph_instance.nx_graph.remove_edge(s_safe, t_safe)
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM lgnn_edges WHERE source_id = ? AND target_id = ?", (s_safe, t_safe))
+        c.execute("DELETE FROM lgnn_edges WHERE source_id = ? AND target_id = ?", (t_safe, s_safe))
+        conn.commit()
+        conn.close()
+        
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="Edge not found")
 
 @app.get("/api/lgnn/personas")
 async def get_personas_route():
@@ -813,7 +856,8 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
             
     # Evolve topology
     for _ in range(data.iterations):
-        graph_instance.evolve_topology(compute_time=1.5)
+        import asyncio
+        await asyncio.to_thread(graph_instance.evolve_topology, 1.5)
     
     # Measure final alignment
     final_align = {}
@@ -863,13 +907,8 @@ def calculate_centrality(graph) -> Dict[str, float]:
     import networkx as nx
     if not graph or graph.number_of_nodes() == 0:
         return {}
-    try:
-        return nx.eigenvector_centrality(graph, weight='weight', max_iter=1000, tol=1e-3)
-    except Exception:
-        try:
-            return nx.pagerank(graph, weight='weight')
-        except Exception:
-            return nx.degree_centrality(graph)
+    # Use degree_centrality for fast real-time response on large graphs (>1000 nodes)
+    return nx.degree_centrality(graph)
 
 @app.get("/api/lgnn/graph")
 async def get_graph(parent_id: Optional[str] = "root"):
@@ -903,8 +942,11 @@ async def get_graph(parent_id: Optional[str] = "root"):
                 "confidence": metrics["confidence"],
                 "is_grounded": metrics["is_grounded"],
                 "source_tag": metrics["source_tag"],
+                "node_type": metrics.get("node_type", "standard"),
                 "is_leader": (orig_id == leader_node),
-                "centrality": centrality_scores.get(orig_id, 0.0)
+                "centrality": centrality_scores.get(orig_id, 0.0),
+                "text_content": metrics.get("text_content", ""),
+                "meta_data": metrics.get("meta_data", "{}")
             })
         
     for u, v, data in graph_instance.nx_graph.edges(data=True):
@@ -917,9 +959,63 @@ async def get_graph(parent_id: Optional[str] = "root"):
         
     return {"nodes": nodes_data, "links": links_data}
 
+@app.get("/api/lgnn/market/search")
+async def market_search(q: Optional[str] = ""):
+    # Mocking market results for now
+    results = [
+        {"id": "plugin_ai_chat", "name": "AI Chat Assistant", "author": "AethelnetCore", "downloads": 1500, "rating": 4.8},
+        {"id": "plugin_crypto_tracker", "name": "Crypto Market Tracker", "author": "DeFi_Ninja", "downloads": 850, "rating": 4.5},
+        {"id": "plugin_weather", "name": "Global Weather Hub", "author": "MeteoGroup", "downloads": 230, "rating": 4.1}
+    ]
+    if q:
+        q_lower = q.lower()
+        results = [r for r in results if q_lower in r["name"].lower() or q_lower in r["author"].lower()]
+    return {"status": "success", "results": results}
+
+@app.get("/api/lgnn/snapshot/history")
+async def snapshot_history():
+    from .database import get_snapshot_history
+    history = get_snapshot_history()
+    return {"history": history}
+
+@app.post("/api/lgnn/snapshot/create")
+async def snapshot_create(payload: dict):
+    from .database import create_snapshot
+    desc = payload.get("description", "Manual snapshot")
+    c_hash = create_snapshot(desc)
+    return {"status": "success", "hash": c_hash}
+
+@app.post("/api/lgnn/snapshot/checkout")
+async def snapshot_checkout(payload: dict):
+    from .database import checkout_snapshot, load_all_from_db
+    c_hash = payload.get("commit_hash")
+    if not c_hash:
+        raise HTTPException(status_code=400, detail="commit_hash is required")
+        
+    success, msg = checkout_snapshot(c_hash)
+    if not success:
+        raise HTTPException(status_code=404, detail=msg)
+        
+    # Reload the graph instance from DB
+    nodes_rows, edges_rows = load_all_from_db()
+    graph_instance.nodes.clear()
+    graph_instance.nx_graph.clear()
+    
+    for row in nodes_rows:
+        graph_instance.nodes[row["id"]] = torch.tensor(json.loads(row["embedding"]), device=DEVICE)
+        
+    for row in edges_rows:
+        graph_instance.nx_graph.add_edge(row["source"], row["target"], weight=row["weight"])
+        
+    return {"status": "success", "message": msg}
+
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 
 active_websockets = set()
+
+@app.websocket("/ws/stream")
+async def websocket_stream_endpoint(websocket: WebSocket):
+    await websocket_endpoint(websocket)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -1578,7 +1674,8 @@ async def startup_event():
     async def continuous_ode_loop():
         while True:
             try:
-                graph_instance.evolve_topology(compute_time=1.0)
+                import asyncio
+                await asyncio.to_thread(graph_instance.evolve_topology, 1.0)
                 # Run node deduplication and merging
                 deduplicate_and_merge_nodes()
                 # Persist evolved node parameters and update confidence breathing lifecycle
