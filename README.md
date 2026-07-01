@@ -42,6 +42,7 @@ The node possesses active sensory modules that constantly poll the host machine 
 *   **Universal Document Reader:** Digests unstructured text and PDFs from the local file system.
 *   **System Vitals Monitor:** Bridges the machine's physical stress (CPU/RAM load) directly into the network as "pain" or "stress" vectors.
 *   **Autonomous Web Spiders:** Crawls specified web domains recursively to hunt for structural knowledge independently.
+*   **CodeSpider Blueprint Engine:** Introspects the local filesystem and translates its own architecture into a massive dependency graph (available at `/system_apps/blueprint`).
 
 ### 2. The Universal OmniDecoder
 The LGNN does not think in human language; it thinks in continuous multi-dimensional vectors. The `OmniDecoder` calculates a **Dream Vector** representing the node's current most confident concepts. Based purely on the physical variance and mean of this vector, the node organically decides how to express its current state:

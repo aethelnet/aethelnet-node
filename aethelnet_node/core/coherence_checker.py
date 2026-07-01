@@ -1,7 +1,7 @@
 import torch
 import logging
 from typing import Dict, Any, List, Tuple
-from aethelnet_node.liquid_graph import LiquidGraph
+from aethelnet.liquid_graph import LiquidGraph
 from aethelnet_node.database import load_graph_state
 
 logger = logging.getLogger("LGNN.Coherence")
