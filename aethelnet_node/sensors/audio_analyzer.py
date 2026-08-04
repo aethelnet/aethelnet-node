@@ -2,9 +2,18 @@ import os
 import asyncio
 import logging
 import json
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
+
 import numpy as np
-from tinytag import TinyTag
+
+try:
+    from tinytag import TinyTag
+except ImportError:
+    TinyTag = None
+    
 from aethelnet_node.sensors.base_sensor import BaseSensor
 
 logger = logging.getLogger("Aethelnet.AudioAnalyzer")
@@ -30,6 +39,10 @@ class AudioAnalyzerSensor(BaseSensor):
             json.dump(list(self.visited), f)
 
     def analyze_audio(self, filepath):
+        if librosa is None or TinyTag is None:
+            logger.warning(f"Skipping audio analysis of {filepath}: librosa or tinytag is not installed.")
+            return None, []
+            
         try:
             # Extract metadata tags
             tag = TinyTag.get(filepath)

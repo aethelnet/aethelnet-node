@@ -4,16 +4,43 @@ import logging
 import socket
 import math
 from typing import List, Dict, Any
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import websockets
+import json
+
+from web3 import Web3
 
 DEFAULT_CONFIDENCE = (math.sqrt(5) - 1) / 2  # ~0.6180339887
 logger = logging.getLogger("LGNN.P2P")
 
 p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
 
-# Known peer registry (IPs or hostnames)
-KNOWN_PEERS = ["172.20.10.10:8001", "141.147.20.191:8001", "130.61.202.29:8001", "92.5.45.124:8001"]
+# TheForge Contract Config (Ensure this matches your local deployment!)
+RPC_URL = "http://127.0.0.1:8545"
+FORGE_ADDRESS = "0x81E3E4Cba25546b2e8339Bf9d7c46F6707cE88f2" # Update this after re-deploy!
+FORGE_ABI = [
+    {"inputs":[],"name":"getActiveNodes","outputs":[{"internalType":"string[]","name":"","type":"string[]"}],"stateMutability":"view","type":"function"}
+]
+
+def get_known_peers() -> List[str]:
+    """Dynamically fetches active peers from the Aethelnet DAO (TheForge)."""
+    try:
+        w3 = Web3(Web3.HTTPProvider(RPC_URL))
+        if not w3.is_connected():
+            logger.warning("[P2P] Blockchain RPC unreachable. Falling back to local peers.")
+            return ["127.0.0.1:8001"]
+            
+        contract = w3.eth.contract(address=FORGE_ADDRESS, abi=FORGE_ABI)
+        active_ips = contract.functions.getActiveNodes().call()
+        
+        if not active_ips:
+            return ["127.0.0.1:8001"]
+            
+        return [ip for ip in active_ips if ip != ""]
+    except Exception as e:
+        logger.error(f"[P2P] Error fetching peers from blockchain: {e}")
+        return ["127.0.0.1:8001"]
 
 class PeerSyncPayload(BaseModel):
     peer_id: str
@@ -57,6 +84,80 @@ async def extract_expertise():
         "nodes": expert_nodes
     }
 
+active_p2p_sockets = set()
+
+@p2p_router.websocket("/ws")
+async def p2p_websocket_endpoint(websocket: WebSocket):
+    """
+    Real-time P2P Synapse. Accepts connections from other LGNN nodes.
+    """
+    await websocket.accept()
+    active_p2p_sockets.add(websocket)
+    peer_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"[P2P] Synapse established with peer {peer_ip}")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            if payload.get("type") == "resonance_wave":
+                # A wave of state vectors from another node!
+                pass
+    except WebSocketDisconnect:
+        logger.info(f"[P2P] Synapse severed with peer {peer_ip}")
+        active_p2p_sockets.discard(websocket)
+        
+async def broadcast_resonance(node_id: str, new_state: float):
+    """
+    Pushes a resonance wave to all connected peers in sub-50ms.
+    """
+    if not active_p2p_sockets:
+        return
+    message = json.dumps({
+        "type": "resonance_wave",
+        "node": node_id,
+        "state": new_state
+    })
+    disconnected = set()
+    for ws in list(active_p2p_sockets):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            disconnected.add(ws)
+    for ws in disconnected:
+        active_p2p_sockets.discard(ws)
+
+async def real_time_p2p_sync():
+    """
+    Connects as a client to the /ws endpoint of active peers.
+    """
+    await asyncio.sleep(10) # Give nodes time to boot
+    connected_peers = set()
+    
+    while True:
+        known_peers = get_known_peers()
+        for peer in known_peers:
+            if peer in connected_peers:
+                continue
+                
+            ws_url = f"ws://{peer}/p2p/ws"
+            # Spawn a client task per peer
+            async def peer_client_task(p_url, p_ip):
+                try:
+                    async with websockets.connect(p_url) as ws:
+                        logger.info(f"[P2P] Client connected to Synapse {p_url}")
+                        connected_peers.add(p_ip)
+                        while True:
+                            msg = await ws.recv()
+                            # Handle incoming real-time wave here
+                except Exception as e:
+                    if p_ip in connected_peers:
+                        logger.debug(f"[P2P] Lost connection to {p_url}: {e}")
+                        connected_peers.remove(p_ip)
+                        
+            asyncio.create_task(peer_client_task(ws_url, peer))
+                
+        await asyncio.sleep(15) # Check for new peers every 15 seconds
+
 @p2p_router.post("/sync")
 async def receive_peer_sync(payload: PeerSyncPayload):
     """
@@ -96,8 +197,9 @@ async def hunt_for_peers():
     logger.info("[P2P] Peer Hunter initialized. Looking for other LGNN instances...")
     
     while True:
+        known_peers = get_known_peers()
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for peer in KNOWN_PEERS:
+            for peer in known_peers:
                 peer_url = f"http://{peer}/p2p/expertise"
                 try:
                     response = await client.get(peer_url)
@@ -167,8 +269,9 @@ async def gossip_truth_to_peers():
                 "context_tags": ["p2p_gossip", "universal_truth"]
             }
             
+            known_peers = get_known_peers()
             async with httpx.AsyncClient(timeout=5.0) as client:
-                for peer in KNOWN_PEERS:
+                for peer in known_peers:
                     peer_url = f"http://{peer}/api/lgnn/universal_ingest"
                     try:
                         resp = await client.post(peer_url, json=payload)
@@ -186,3 +289,4 @@ def start_p2p_hunter():
     loop = asyncio.get_event_loop()
     loop.create_task(hunt_for_peers())
     loop.create_task(gossip_truth_to_peers())
+    loop.create_task(real_time_p2p_sync())

@@ -23,43 +23,30 @@
   tags: ["hardware", "system_telemetry", "vitals"]
 
 - type: web_spider
-  name: AethelSpider_Art
-  confidence: 0.8
-  tags: ["art", "concept", "wikipedia"]
+  name: AethelSpider_Crypto
+  confidence: 0.95
+  tags: ["crypto", "finance", "blockchain"]
   sources:
-    - "https://en.wikipedia.org/wiki/Generative_art"
-    - "https://en.wikipedia.org/wiki/Algorithmic_art"
-  priority_keywords:
-    - "art"
-    - "generative"
-    - "procedural"
-
-- type: web_spider
-  name: AethelSpider_Cosmic
-  confidence: 0.8
-  tags: ["cosmic", "physics", "wikipedia"]
-  sources:
-    - "https://en.wikipedia.org/wiki/Astrophysics"
-    - "https://en.wikipedia.org/wiki/Quantum_mechanics"
-  priority_keywords:
-    - "physics"
-    - "quantum"
-    - "star"
-
-- type: web_spider
-  name: AethelSpider_Privacy
-  confidence: 0.9
-  tags: ["privacy", "cryptography", "infosec"]
-  sources:
-    - "https://en.wikipedia.org/wiki/Cryptography"
-    - "https://en.wikipedia.org/wiki/End-to-end_encryption"
-    - "https://en.wikipedia.org/wiki/Privacy_by_design"
-    - "https://en.wikipedia.org/wiki/Cybersecurity"
+    - "https://en.wikipedia.org/wiki/Cryptocurrency"
+    - "https://en.wikipedia.org/wiki/Decentralized_finance"
+    - "https://en.wikipedia.org/wiki/Smart_contract"
   priority_keywords:
     - "crypto"
-    - "encryption"
-    - "privacy"
-    - "security"
+    - "defi"
+    - "token"
+
+- type: web_spider
+  name: AethelSpider_Science
+  confidence: 0.95
+  tags: ["physics", "hard_science", "quantum"]
+  sources:
+    - "https://en.wikipedia.org/wiki/Quantum_computing"
+    - "https://en.wikipedia.org/wiki/Artificial_neural_network"
+    - "https://en.wikipedia.org/wiki/String_theory"
+  priority_keywords:
+    - "quantum"
+    - "neural"
+    - "theory"
 
 - type: weather
   name: WeatherSensor_Berlin

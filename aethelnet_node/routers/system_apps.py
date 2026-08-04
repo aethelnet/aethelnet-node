@@ -23,10 +23,10 @@ def call_openrouter_with_retry(
     api_key: Optional[str] = None,
     custom_model: Optional[str] = None
 ) -> str:
-    key = api_key or os.getenv("OPENAI_API_KEY")
+    key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
     if key:
         payload = {
-            "model": custom_model or "gpt-4o-mini",
+            "model": custom_model or os.getenv("OPENROUTER_MODEL") or "google/gemini-2.0-flash-lite-preview-02-05:free",
             "messages": [{"role": "user", "content": prompt}]
         }
         if is_json_object:
@@ -34,10 +34,16 @@ def call_openrouter_with_retry(
             
         for attempt in range(max_retries):
             try:
+                # Determine URL based on provider or default to OpenRouter
+                url = "https://api.openai.com/v1/chat/completions" if provider == 'openai' else "https://openrouter.ai/api/v1/chat/completions"
                 req = urllib.request.Request(
-                    "https://api.openai.com/v1/chat/completions",
+                    url,
                     data=json.dumps(payload).encode('utf-8'),
-                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {key}'},
+                    headers={
+                        'Content-Type': 'application/json', 
+                        'Authorization': f'Bearer {key}',
+                        'HTTP-Referer': 'http://localhost:1420'
+                    },
                     method='POST'
                 )
                 with urllib.request.urlopen(req, timeout=15) as res:
@@ -170,3 +176,92 @@ async def get_system_blueprint():
         json.dump(graph_data, f)
         
     return graph_data
+
+class PrismaRefractRequest(BaseModel):
+    raw_input: str
+    custom_prompt: Optional[str] = None
+    api_provider: Optional[str] = None
+    api_key: Optional[str] = None
+    custom_model: Optional[str] = None
+    prisma_node_id: Optional[str] = None
+    parent_id: Optional[str] = None
+
+@router.post("/prisma/refract")
+async def prisma_refract(data: PrismaRefractRequest, request: Request):
+    """
+    The PRISMA node endpoint.
+    Takes social noise / unstructured text and extracts 3-5 hard facts via LLM.
+    """
+    if not data.raw_input or not data.raw_input.strip():
+        return {"status": "error", "message": "Input is empty"}
+
+    base_prompt = data.custom_prompt or "You are the PRISMA core of the Aethelnet Observer. Your job is to take the following 'Social Noise' (text, transcript, or ideas) and refract it into 3-5 hard, concrete, verified facts or scientific observations. Ignore hype, emojis, and filler. Extract ONLY the core truth, logical conclusions, or verifiable claims. Do not hallucinate data. Additionally, provide a 'dissonance_score' (float 0.0 to 1.0) representing how contradictory or chaotic the text is, and a short 'sentiment' tag (e.g. 'bullish', 'bearish', 'neutral', 'academic')."
+    
+    prompt = f"""
+{base_prompt}
+
+Output JSON format strictly:
+{{
+  "facts": [
+    "Fact 1...",
+    "Fact 2..."
+  ],
+  "dissonance_score": 0.5,
+  "sentiment": "neutral"
+}}
+
+Social Noise:
+{data.raw_input}
+"""
+    try:
+        raw_res = call_openrouter_with_retry(
+            prompt, 
+            is_json_object=True,
+            provider=data.api_provider,
+            api_key=data.api_key,
+            custom_model=data.custom_model
+        )
+        try:
+            res_json = json.loads(raw_res)
+            facts = res_json.get("facts", ["No facts extracted."])
+            dissonance = res_json.get("dissonance_score", 0.0)
+            sentiment = res_json.get("sentiment", "unknown")
+        except Exception:
+            # Fallback if raw_res is not JSON (e.g. LLM Execution Error)
+            facts = [raw_res]
+            dissonance = 1.0
+            sentiment = "error"
+        
+        # Inject facts into graph
+        if data.prisma_node_id:
+            import time
+            graph_instance = request.app.state.graph_instance
+            text_to_embedding = request.app.state.text_to_embedding
+            
+            for fact in facts:
+                if not fact.strip():
+                    continue
+                node_id = f"prisma_{int(time.time()*1000)}_{hash(fact) % 10000}"
+                emb = text_to_embedding(fact)
+                
+                # Add to memory graph
+                graph_instance.add_node(node_id, emb, connections=[data.prisma_node_id])
+                
+                # Add to DB
+                meta = {"dissonance": dissonance, "sentiment": sentiment}
+                save_node(
+                    node_id, emb, 
+                    0.0, 0.95, 0.0, False, False, 
+                    text_content=fact, 
+                    source_tag="prisma_fact",
+                    parent_id=data.parent_id,
+                    meta_data=json.dumps(meta)
+                )
+                save_edge(data.prisma_node_id, node_id, 1.0)
+                
+        return {"status": "success", "facts": facts}
+        
+    except Exception as e:
+        logger.error(f"Prisma refraction failed: {e}")
+        return {"status": "error", "message": str(e), "facts": [f"Prisma Error: {e}"]}
+

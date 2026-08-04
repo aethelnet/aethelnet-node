@@ -2,7 +2,11 @@ import os
 import asyncio
 import logging
 import json
-from unstructured.partition.auto import partition
+try:
+    from unstructured.partition.auto import partition
+except ImportError:
+    partition = None
+
 from aethelnet_node.sensors.base_sensor import BaseSensor
 
 logger = logging.getLogger("Aethelnet.UniversalDocument")
@@ -28,6 +32,10 @@ class UniversalDocumentSensor(BaseSensor):
             json.dump(list(self.visited), f)
 
     def read_document(self, filepath):
+        if partition is None:
+            logger.warning(f"[{self.name}] Skipping {filepath}: 'unstructured' not installed.")
+            return None, []
+            
         try:
             # unstructured automatically detects PDF, Word, Excel, PPT, EML, HTML, EPUB, etc.
             elements = partition(filename=filepath)

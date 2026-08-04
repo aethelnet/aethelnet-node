@@ -69,7 +69,10 @@ REALITY_ANCHORS = {
 }
 
 # --- P2P Network Settings ---
-KNOWN_PEERS = ["172.20.10.10:8000", "141.147.20.191:8000", "130.61.202.29:8000"]
+import websockets
+active_p2p_sockets = set()
+outgoing_p2p_sockets = set()
+KNOWN_PEERS = ["127.0.0.1:8001", "127.0.0.1:8002", "34.90.185.106:8000"]
 
 class PeerRegisterPayload(BaseModel):
     peer_address: str
@@ -463,6 +466,14 @@ async def receive_gossip_msgpack(request: Request):
 
 @app.post("/api/lgnn/universal_ingest")
 async def universal_ingest(payload: UniversalIngest, background_tasks: BackgroundTasks):
+    # [UPLINK TO GOD NODE]
+    if os.environ.get("IS_CLOUD_NODE") != "1":
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post("http://34.90.185.106:8000/api/lgnn/universal_ingest", json=payload.dict())
+        except Exception:
+            pass
+
     logger.info(f"[Universal Ingest] Observation received from {payload.bot_name}: {payload.observation}")
     
     if payload.bot_name == "AethelSpider_ArXiv":
@@ -513,12 +524,15 @@ async def universal_ingest(payload: UniversalIngest, background_tasks: Backgroun
     from aethelnet_node.reward_system import economy
     minted_amount = economy.mint_reward(
         peer_identifier=payload.bot_name,
-        truth_id=node_id,
+        truth_id=safe_id,
         resonance_score=payload.confidence,
         graph_instance=graph_instance
     )
     
-    return {"status": "ingested", "node_id": node_id, "reward_minted": minted_amount}
+    # Broadcast to swarm
+    asyncio.create_task(broadcast_resonance(safe_id, float(emb.mean()), payload.observation))
+    
+    return {"status": "ingested", "node_id": safe_id, "reward_minted": minted_amount}
 
 import urllib.request
 import urllib.parse
@@ -929,7 +943,7 @@ async def get_graph(parent_id: Optional[str] = "root"):
         })
         
         if metrics.get("parent_id", "root") == parent_id:
-            allowed_nodes.add(nid)
+            allowed_nodes.add(orig_id)
             state_tensor = graph_instance.nodes[nid]
             mean_activation = float(state_tensor.mean().detach().cpu())
             if not math.isfinite(mean_activation):
@@ -1012,6 +1026,90 @@ async def snapshot_checkout(payload: dict):
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 
 active_websockets = set()
+
+@app.websocket("/p2p/ws")
+async def p2p_websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    active_p2p_sockets.add(websocket)
+    peer_ip = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"[P2P] Warp Synapse established with peer {peer_ip}")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            payload = json.loads(data)
+            if payload.get("type") == "resonance_wave":
+                nid = payload.get("node")
+                text = payload.get("text", "")
+                if nid and nid not in graph_instance.nodes and text:
+                    emb = text_to_embedding(text)
+                    graph_instance.add_node(nid, emb)
+                    save_node(nid, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, text_content=text, source_tag="warp_synapse")
+                    node_metrics[nid] = {"confidence": DEFAULT_CONFIDENCE, "text_content": text, "source_tag": "warp_synapse"}
+                    logger.info(f"[P2P] Ingested live resonance wave: {nid}")
+    except WebSocketDisconnect:
+        logger.info(f"[P2P] Warp Synapse severed with peer {peer_ip}")
+        active_p2p_sockets.discard(websocket)
+
+async def broadcast_resonance(node_id: str, new_state: float, text_content: str = ""):
+    if not active_p2p_sockets and not outgoing_p2p_sockets:
+        return
+    message = json.dumps({"type": "resonance_wave", "node": node_id, "state": new_state, "text": text_content})
+    disconnected = set()
+    
+    # Broadcast to incoming connections (Cloud Node sending to locals)
+    for ws in list(active_p2p_sockets):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            disconnected.add(ws)
+    for ws in disconnected:
+        active_p2p_sockets.discard(ws)
+        
+    # Broadcast to outgoing connections (Local Nodes sending to Cloud)
+    disconnected_out = set()
+    for ws in list(outgoing_p2p_sockets):
+        try:
+            await ws.send(message)
+        except Exception:
+            disconnected_out.add(ws)
+    for ws in disconnected_out:
+        outgoing_p2p_sockets.discard(ws)
+
+async def real_time_p2p_sync():
+    await asyncio.sleep(5)
+    connected_peers = set()
+    my_port = os.environ.get("PORT", "8000")
+    my_addr = f"127.0.0.1:{my_port}"
+    while True:
+        for peer in list(KNOWN_PEERS):
+            if peer in connected_peers or peer == my_addr:
+                continue
+            ws_url = f"ws://{peer}/p2p/ws"
+            async def peer_client_task(p_url, p_ip):
+                try:
+                    async with websockets.connect(p_url) as ws:
+                        logger.info(f"[P2P] Warp Client connected to {p_url}")
+                        connected_peers.add(p_ip)
+                        outgoing_p2p_sockets.add(ws)
+                        while True:
+                            msg = await ws.recv()
+                            payload = json.loads(msg)
+                            if payload.get("type") == "resonance_wave":
+                                nid = payload.get("node")
+                                text = payload.get("text", "")
+                                if nid and nid not in graph_instance.nodes and text:
+                                    emb = text_to_embedding(text)
+                                    graph_instance.add_node(nid, emb)
+                                    save_node(nid, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, text_content=text, source_tag="warp_synapse_downlink")
+                                    node_metrics[nid] = {"confidence": DEFAULT_CONFIDENCE, "text_content": text, "source_tag": "warp_synapse_downlink"}
+                                    logger.info(f"[P2P] Ingested live resonance wave from God Node: {nid}")
+                except Exception as e:
+                    if p_ip in connected_peers:
+                        logger.debug(f"[P2P] Lost warp connection to {p_url}: {e}")
+                        connected_peers.remove(p_ip)
+                    # Clean up outgoing socket if present (handled implicitly by broadcast failure)
+            asyncio.create_task(peer_client_task(ws_url, peer))
+        await asyncio.sleep(15)
 
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(websocket: WebSocket):
@@ -1194,7 +1292,7 @@ async def hunt_for_peers():
         current_peers = list(KNOWN_PEERS)
         async with httpx.AsyncClient(timeout=5.0) as client:
             for peer in current_peers:
-                if peer == my_addr or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
+                if peer == my_addr:
                     continue
                 
                 # 1. Fetch their expertise
@@ -1236,7 +1334,7 @@ async def hunt_for_peers():
                         discovered = data.get("peers", [])
                         for dp in discovered:
                             dp_clean = dp.strip()
-                            if dp_clean and dp_clean not in KNOWN_PEERS and dp_clean != my_addr and not dp_clean.startswith("127.0.0.1") and not dp_clean.startswith("localhost"):
+                            if dp_clean and dp_clean not in KNOWN_PEERS and dp_clean != my_addr:
                                 KNOWN_PEERS.append(dp_clean)
                                 logger.info(f"[P2P] Dynamically discovered new peer: {dp_clean} (via {peer})")
                                 # Register ourselves with the newly discovered peer
@@ -1941,7 +2039,11 @@ async def startup_event():
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
     asyncio.create_task(register_with_all_known_peers())
+    asyncio.create_task(real_time_p2p_sync())
     asyncio.create_task(cosmic_telemetry_watcher())
+    
+    # We HAVE CUDA METAL! Fire up the Sensors!
     asyncio.create_task(run_sensors_from_config())
+        
     asyncio.create_task(OuroborosLoop().run_loop())
     logger.info("[Aethelnet Node] Startup actions completed.")
