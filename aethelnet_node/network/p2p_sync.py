@@ -16,7 +16,7 @@ p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
 KNOWN_PEERS = [
     "172.20.10.10:8000",  # Desktop (Sovereign Academy)
     "130.61.202.29:8000", # Cloud Execution Node (Sniper)
-    "141.147.20.191:8000" # UNIT734 (Clean LGNN Main)
+    "YOUR_NODE_IP_1:8000" # UNIT734 (Clean LGNN Main)
 ]
 
 class PeerSyncPayload(BaseModel):

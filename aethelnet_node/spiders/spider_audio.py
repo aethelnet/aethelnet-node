@@ -4,14 +4,18 @@ import json
 import logging
 import asyncio
 import httpx
-import librosa
+try:
+    import librosa
+except ImportError:
+    librosa = None
+
 import numpy as np
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("AudioSpider")
 
-TARGET_URL = "http://141.147.20.191:8000/api/lgnn/universal_ingest"
+TARGET_URL = "http://YOUR_NODE_IP_1:8000/api/lgnn/universal_ingest"
 MUSIC_DIR = os.path.expanduser("~/Everything_Music")
 VISITED_FILE = os.path.join(os.path.dirname(__file__), ".visited_audio.json")
 
@@ -29,6 +33,10 @@ def save_visited(visited):
         json.dump(list(visited), f)
 
 def analyze_audio(filepath):
+    if librosa is None:
+        logger.warning(f"Skipping audio analysis of {filepath}: librosa is not installed.")
+        return None
+        
     try:
         # Load audio (limit duration to speed up)
         y, sr = librosa.load(filepath, duration=30.0, mono=True)
