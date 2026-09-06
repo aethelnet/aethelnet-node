@@ -68,11 +68,19 @@ REALITY_ANCHORS = {
     "aethelburg": {"value": 0.0, "desc": "The deterministic framework waiting for a prompt", "dim": "State"}
 }
 
-# --- P2P Network Settings ---
+# --- P2P Network Settings & On-Chain TheForge Integration ---
 import websockets
+from aethelnet_node.forge_client import forge_client
+
 active_p2p_sockets = set()
 outgoing_p2p_sockets = set()
-KNOWN_PEERS = ["127.0.0.1:8001", "127.0.0.1:8002", "34.90.185.106:8000"]
+
+def get_known_peers() -> List[str]:
+    """
+    Dynamically queries TheForge.sol for active nodes.
+    Static mocks and fallback arrays are strictly eliminated.
+    """
+    return forge_client.get_active_nodes()
 
 class PeerRegisterPayload(BaseModel):
     peer_address: str
@@ -325,7 +333,13 @@ async def ingest_file(payload: FileIngestRequest, background_tasks: BackgroundTa
 
 @app.get("/")
 def health():
-    return {"status": "operational", "node": socket.gethostname(), "peers_configured": len(KNOWN_PEERS)}
+    return {
+        "status": "operational",
+        "node": socket.gethostname(),
+        "peers_active_on_chain": len(get_known_peers()),
+        "forge_contract": forge_client.contract_address,
+        "forge_connected": forge_client.is_connected()
+    }
 
 @app.get("/p2p/ping")
 async def ping_peer():
@@ -334,26 +348,28 @@ async def ping_peer():
 
 @app.get("/p2p/peers")
 async def get_peers():
-    return {"peers": list(KNOWN_PEERS)}
+    nodes = await asyncio.to_thread(forge_client.get_active_nodes)
+    return {
+        "peers": nodes,
+        "source": "TheForge.sol",
+        "contract": forge_client.contract_address
+    }
 
 @app.post("/p2p/register")
 async def register_peer(payload: PeerRegisterPayload):
     peer = payload.peer_address.strip()
-    # Check if not ourselves (both via loopback and our real hostname/IP resolved)
-    my_ip = "127.0.0.1"
+    logger.info(f"[P2P API] Peer registration requested for '{peer}'. Executing registerNode on-chain...")
     try:
-        my_ip = socket.gethostbyname(socket.gethostname())
-    except Exception:
-        pass
-    
-    if peer == f"{my_ip}:8000" or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
-        return {"status": "self_registration_ignored", "peers": list(KNOWN_PEERS)}
-
-    if peer and peer not in KNOWN_PEERS:
-        KNOWN_PEERS.append(peer)
-        logger.info(f"[P2P] Dynamic Peer registered: {peer}")
-        return {"status": "registered", "peers": list(KNOWN_PEERS)}
-    return {"status": "already_registered", "peers": list(KNOWN_PEERS)}
+        receipt = await asyncio.to_thread(forge_client.register_node, peer)
+        return {
+            "status": "registered_on_chain",
+            "tx_hash": receipt["tx_hash"],
+            "block_number": receipt["block_number"],
+            "peers": get_known_peers()
+        }
+    except Exception as e:
+        logger.error(f"[P2P API] On-chain registration failed for {peer}: {e}")
+        return {"status": "error", "message": str(e), "peers": get_known_peers()}
 
 @app.get("/p2p/expertise")
 async def extract_expertise():
@@ -400,8 +416,8 @@ async def receive_gossip_msgpack(request: Request):
     The Holy Trinity Protocol: Receive compressed 'Grains of Truth' via MsgPack.
     """
     client_ip = request.client.host
-    # Accept if it's localhost or one of our known peers
-    is_known = client_ip in ["127.0.0.1", "localhost"] or any(client_ip in peer for peer in KNOWN_PEERS)
+    # Accept if it's localhost or one of our known peers from TheForge.sol
+    is_known = client_ip in ["127.0.0.1", "localhost"] or any(client_ip in peer for peer in get_known_peers())
     
     body = await request.body()
     try:
@@ -524,15 +540,15 @@ async def universal_ingest(payload: UniversalIngest, background_tasks: Backgroun
     from aethelnet_node.reward_system import economy
     minted_amount = economy.mint_reward(
         peer_identifier=payload.bot_name,
-        truth_id=safe_id,
+        truth_id=node_id,
         resonance_score=payload.confidence,
         graph_instance=graph_instance
     )
     
     # Broadcast to swarm
-    asyncio.create_task(broadcast_resonance(safe_id, float(emb.mean()), payload.observation))
+    asyncio.create_task(broadcast_resonance(node_id, float(emb.mean()), payload.observation))
     
-    return {"status": "ingested", "node_id": safe_id, "reward_minted": minted_amount}
+    return {"status": "ingested", "node_id": node_id, "reward_minted": minted_amount}
 
 import urllib.request
 import urllib.parse
@@ -1081,7 +1097,7 @@ async def real_time_p2p_sync():
     my_port = os.environ.get("PORT", "8000")
     my_addr = f"127.0.0.1:{my_port}"
     while True:
-        for peer in list(KNOWN_PEERS):
+        for peer in get_known_peers():
             if peer in connected_peers or peer == my_addr:
                 continue
             ws_url = f"ws://{peer}/p2p/ws"
@@ -1289,7 +1305,7 @@ async def hunt_for_peers():
             pass
         my_addr = f"{my_ip}:8000"
 
-        current_peers = list(KNOWN_PEERS)
+        current_peers = get_known_peers()
         async with httpx.AsyncClient(timeout=5.0) as client:
             for peer in current_peers:
                 if peer == my_addr:
@@ -1302,7 +1318,7 @@ async def hunt_for_peers():
                     if response.status_code == 200:
                         data = response.json()
                         expert_nodes = data.get("nodes", [])
-                        logger.info(f"[P2P] Discovered {len(expert_nodes)} high-confidence concepts from {peer}.")
+                        logger.info(f"[P2P] Discovered {len(expert_nodes)} high-confidence concepts from on-chain peer {peer}.")
                         
                         persona_name = f"Expertise_{peer.replace(':', '_')}"
                         persona_node_ids = []
@@ -1313,7 +1329,7 @@ async def hunt_for_peers():
                             graph_instance.add_node(nid, emb)
                             save_node(
                                 nid, emb, 0.0, node.get("confidence", DEFAULT_CONFIDENCE), 0.0,
-                                False, False, text_content=f"Harvested from peer {peer}",
+                                False, False, text_content=f"Harvested from on-chain peer {peer}",
                                 source_tag=f"p2p_gossip_{peer}"
                             )
                             persona_node_ids.append(nid)
@@ -1322,27 +1338,6 @@ async def hunt_for_peers():
                             graph_instance.define_persona(persona_name, persona_node_ids)
                             save_persona(persona_name, persona_node_ids, active=True)
                             graph_instance.set_persona_active(persona_name, True)
-                except Exception:
-                    pass
-
-                # 2. Fetch their peer list for discovery
-                peers_url = f"http://{peer}/p2p/peers"
-                try:
-                    response = await client.get(peers_url)
-                    if response.status_code == 200:
-                        data = response.json()
-                        discovered = data.get("peers", [])
-                        for dp in discovered:
-                            dp_clean = dp.strip()
-                            if dp_clean and dp_clean not in KNOWN_PEERS and dp_clean != my_addr:
-                                KNOWN_PEERS.append(dp_clean)
-                                logger.info(f"[P2P] Dynamically discovered new peer: {dp_clean} (via {peer})")
-                                # Register ourselves with the newly discovered peer
-                                try:
-                                    await client.post(f"http://{dp_clean}/p2p/register", json={"peer_address": my_addr})
-                                    logger.info(f"[P2P] Registered ourselves with newly discovered peer {dp_clean}")
-                                except Exception:
-                                    pass
                 except Exception:
                     pass
         await asyncio.sleep(60)
@@ -1371,7 +1366,7 @@ async def gossip_truth_to_peers():
             packed_payload = msgpack.packb(payload, use_bin_type=True)
             
             async with httpx.AsyncClient(timeout=5.0) as client:
-                for peer in KNOWN_PEERS:
+                for peer in get_known_peers():
                     if peer.startswith("127.0.0.1") or peer.startswith("localhost"):
                         continue
                         
@@ -1652,198 +1647,205 @@ async def startup_event():
         """
         Scans all GNN nodes for high cosine similarity and merges them,
         preserving the one with higher confidence/reality grounding.
+        Vectorized via PyTorch matrix multiplication to avoid blocking the event loop.
         """
         nodes_keys = list(graph_instance.nodes.keys())
         if len(nodes_keys) < 2:
             return
             
-        # Get all embeddings and normalize them
-        embs = {}
-        orig_ids = {}
-        for nid in nodes_keys:
-            orig_id = graph_instance._original_id(nid)
-            orig_ids[nid] = orig_id
-            emb = graph_instance.nodes[nid]
-            embs[nid] = emb / (emb.norm() + 1e-8)
+        with torch.no_grad():
+            embs_tensor = torch.stack([graph_instance.nodes[nid].detach() for nid in nodes_keys])
+            normed = embs_tensor / (embs_tensor.norm(dim=1, keepdim=True) + 1e-8)
+            sim_matrix = torch.mm(normed, normed.t())
+            sim_matrix.triu_(diagonal=1)
             
-        merged_any = False
-        discarded = set()
-        
-        for i in range(len(nodes_keys)):
-            nid_a = nodes_keys[i]
-            if nid_a in discarded:
-                continue
+            high_sim_indices = (sim_matrix > threshold).nonzero(as_tuple=False)
+            if len(high_sim_indices) == 0:
+                return
                 
-            for j in range(i + 1, len(nodes_keys)):
-                nid_b = nodes_keys[j]
-                if nid_b in discarded:
-                    continue
+            i, j = int(high_sim_indices[0][0]), int(high_sim_indices[0][1])
+            nid_a, nid_b = nodes_keys[i], nodes_keys[j]
+            sim = float(sim_matrix[i, j])
+
+        orig_a = graph_instance._original_id(nid_a)
+        orig_b = graph_instance._original_id(nid_b)
+        
+        # Check reality anchors
+        is_anchor_a = orig_a in REALITY_ANCHORS
+        is_anchor_b = orig_b in REALITY_ANCHORS
+        
+        metrics_a = node_metrics.get(nid_a, {})
+        metrics_b = node_metrics.get(nid_b, {})
+        
+        conf_a = metrics_a.get("confidence", 0.0)
+        conf_b = metrics_b.get("confidence", 0.0)
+        
+        if is_anchor_a and not is_anchor_b:
+            keep_nid, discard_nid = nid_a, nid_b
+        elif is_anchor_b and not is_anchor_a:
+            keep_nid, discard_nid = nid_b, nid_a
+        elif conf_a >= conf_b:
+            keep_nid, discard_nid = nid_a, nid_b
+        else:
+            keep_nid, discard_nid = nid_b, nid_a
+            
+        keep_orig = graph_instance._original_id(keep_nid)
+        discard_orig = graph_instance._original_id(discard_nid)
+        
+        logger.info(f"[Topology] Merging highly similar nodes: '{discard_orig}' -> '{keep_orig}' (Similarity: {sim:.4f})")
+        
+        # 1. Merge text content (Keep the higher-confidence node's text to prevent infinite bloat)
+        text_keep = get_node_text(keep_orig)
+        text_discard = get_node_text(discard_orig)
+        merged_text = text_keep or text_discard
+        
+        # 2. Merge embeddings
+        emb_keep = graph_instance.nodes[keep_nid]
+        emb_discard = graph_instance.nodes[discard_nid]
+        blended = emb_keep + emb_discard * 0.3
+        blended_norm = blended / (blended.norm() + 1e-8) * max(emb_keep.norm(), emb_discard.norm())
+        
+        graph_instance.nodes[keep_nid] = torch.nn.Parameter(blended_norm.clone().detach())
+        
+        # 3. Transfer edges
+        if discard_orig in graph_instance.nx_graph:
+            neighbors = list(graph_instance.nx_graph.neighbors(discard_orig))
+            for neighbor in neighbors:
+                if neighbor != keep_orig:
+                    w_discard = graph_instance.nx_graph[discard_orig][neighbor].get("weight", 1.0)
+                    w_keep = 1.0
+                    if graph_instance.nx_graph.has_edge(keep_orig, neighbor):
+                        w_keep = graph_instance.nx_graph[keep_orig][neighbor].get("weight", 1.0)
                     
-                sim = float(torch.dot(embs[nid_a], embs[nid_b]).detach().cpu())
-                if sim > threshold:
-                    orig_a = orig_ids[nid_a]
-                    orig_b = orig_ids[nid_b]
+                    new_weight = max(w_keep, w_discard)
+                    graph_instance.nx_graph.add_edge(keep_orig, neighbor, weight=new_weight)
+                    save_edge(keep_orig, neighbor, new_weight)
                     
-                    # Check reality anchors
-                    is_anchor_a = orig_a in REALITY_ANCHORS
-                    is_anchor_b = orig_b in REALITY_ANCHORS
-                    
-                    metrics_a = node_metrics.get(nid_a, {})
-                    metrics_b = node_metrics.get(nid_b, {})
-                    
-                    conf_a = metrics_a.get("confidence", 0.0)
-                    conf_b = metrics_b.get("confidence", 0.0)
-                    
-                    if is_anchor_a and not is_anchor_b:
-                        keep_nid, discard_nid = nid_a, nid_b
-                    elif is_anchor_b and not is_anchor_a:
-                        keep_nid, discard_nid = nid_b, nid_a
-                    elif conf_a >= conf_b:
-                        keep_nid, discard_nid = nid_a, nid_b
-                    else:
-                        keep_nid, discard_nid = nid_b, nid_a
-                        
-                    keep_orig = orig_ids[keep_nid]
-                    discard_orig = orig_ids[discard_nid]
-                    
-                    logger.info(f"[Topology] Merging highly similar nodes: '{discard_orig}' -> '{keep_orig}' (Similarity: {sim:.4f})")
-                    
-                    # 1. Merge text content (Keep the higher-confidence node's text to prevent infinite bloat)
-                    text_keep = get_node_text(keep_orig)
-                    text_discard = get_node_text(discard_orig)
-                    merged_text = text_keep or text_discard
-                    
-                    # 2. Merge embeddings
-                    emb_keep = graph_instance.nodes[keep_nid]
-                    emb_discard = graph_instance.nodes[discard_nid]
-                    blended = emb_keep + emb_discard * 0.3
-                    blended_norm = blended / (blended.norm() + 1e-8) * max(emb_keep.norm(), emb_discard.norm())
-                    
-                    graph_instance.nodes[keep_nid] = torch.nn.Parameter(blended_norm.clone().detach())
-                    
-                    # 3. Transfer edges
-                    if discard_orig in graph_instance.nx_graph:
-                        neighbors = list(graph_instance.nx_graph.neighbors(discard_orig))
-                        for neighbor in neighbors:
-                            if neighbor != keep_orig:
-                                w_discard = graph_instance.nx_graph[discard_orig][neighbor].get("weight", 1.0)
-                                w_keep = 1.0
-                                if graph_instance.nx_graph.has_edge(keep_orig, neighbor):
-                                    w_keep = graph_instance.nx_graph[keep_orig][neighbor].get("weight", 1.0)
-                                
-                                new_weight = max(w_keep, w_discard)
-                                graph_instance.nx_graph.add_edge(keep_orig, neighbor, weight=new_weight)
-                                save_edge(keep_orig, neighbor, new_weight)
-                                
-                            delete_edge(discard_orig, neighbor)
-                    
-                    # 4. Update metrics
-                    metrics_keep = node_metrics.setdefault(keep_nid, {
-                        "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
-                        "is_grounded": keep_orig in REALITY_ANCHORS,
-                        "help_chain": False, "source_tag": "internal", "is_quarantined": False
-                    })
-                    metrics_discard = node_metrics.get(discard_nid, {})
-                    
-                    new_conf = min(0.99, metrics_keep.get("confidence", DEFAULT_CONFIDENCE) + metrics_discard.get("confidence", 0.0) * 0.1)
-                    metrics_keep["confidence"] = new_conf
-                    node_metrics[keep_nid] = metrics_keep
-                    
-                    save_node(
-                        keep_orig, graph_instance.nodes[keep_nid], float(graph_instance.nodes[keep_nid].mean().detach().cpu()),
-                        new_conf, metrics_keep.get("plateau_factor", 0.0),
-                        keep_orig in REALITY_ANCHORS, metrics_keep.get("help_chain", False),
-                        text_content=merged_text, source_tag=metrics_keep.get("source_tag", "internal")
-                    )
-                    
-                    # 5. Delete discard node
-                    graph_instance.remove_node(discard_orig)
-                    delete_node(discard_orig)
-                    if discard_nid in node_metrics:
-                        del node_metrics[discard_nid]
-                        
-                    discarded.add(discard_nid)
-                    merged_any = True
-                    break
-            if merged_any:
-                break
+                delete_edge(discard_orig, neighbor)
+        
+        # 4. Update metrics
+        metrics_keep = node_metrics.setdefault(keep_nid, {
+            "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
+            "is_grounded": keep_orig in REALITY_ANCHORS,
+            "help_chain": False, "source_tag": "internal", "is_quarantined": False
+        })
+        metrics_discard = node_metrics.get(discard_nid, {})
+        
+        new_conf = min(0.99, metrics_keep.get("confidence", DEFAULT_CONFIDENCE) + metrics_discard.get("confidence", 0.0) * 0.1)
+        metrics_keep["confidence"] = new_conf
+        node_metrics[keep_nid] = metrics_keep
+        
+        save_node(
+            keep_orig, graph_instance.nodes[keep_nid], float(graph_instance.nodes[keep_nid].mean().detach().cpu()),
+            new_conf, metrics_keep.get("plateau_factor", 0.0),
+            keep_orig in REALITY_ANCHORS, metrics_keep.get("help_chain", False),
+            text_content=merged_text, source_tag=metrics_keep.get("source_tag", "internal")
+        )
+        
+        # 5. Delete discard node
+        graph_instance.remove_node(discard_orig)
+        delete_node(discard_orig)
+        if discard_nid in node_metrics:
+            del node_metrics[discard_nid]
 
     # Start the continuous ODE evolution loop in background
+    def run_single_ode_cycle():
+        graph_instance.evolve_topology(1.0)
+        deduplicate_and_merge_nodes()
+        for nid in list(graph_instance.nodes.keys()):
+            state_tensor = graph_instance.nodes[nid]
+            mean_act = float(state_tensor.mean().detach().cpu())
+            
+            orig_id = graph_instance._original_id(nid)
+            metrics = node_metrics.setdefault(nid, {
+                "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
+                "is_grounded": orig_id in REALITY_ANCHORS,
+                "help_chain": False, "source_tag": "internal", "is_quarantined": False
+            })
+            
+            confidence = metrics.get("confidence", DEFAULT_CONFIDENCE)
+            
+            if orig_id in REALITY_ANCHORS:
+                confidence = 0.95
+            else:
+                degree = graph_instance.nx_graph.degree(orig_id) if orig_id in graph_instance.nx_graph else 0
+                if degree > 0 and abs(mean_act) > 0.05:
+                    delta = (abs(mean_act) * 0.02) + (degree * 0.005)
+                else:
+                    delta = -0.04
+                    
+                confidence = min(1.0, max(0.0, confidence + delta))
+            
+            metrics["confidence"] = confidence
+            node_metrics[nid] = metrics
+            
+            text_content = get_node_text(orig_id)
+            if confidence <= 0.15 and orig_id not in REALITY_ANCHORS and not text_content:
+                logger.info(f"[Lifecycle] Pruning dead legacy node: {orig_id}")
+                graph_instance.remove_node(orig_id)
+                delete_node(orig_id)
+            else:
+                save_node(
+                    orig_id, state_tensor, mean_act, 
+                    confidence, metrics.get("plateau_factor", 0.0), 
+                    orig_id in REALITY_ANCHORS, metrics.get("help_chain", False),
+                    text_content=text_content, source_tag=metrics.get("source_tag", "internal")
+                )
+
     async def continuous_ode_loop():
         while True:
             try:
-                import asyncio
-                await asyncio.to_thread(graph_instance.evolve_topology, 1.0)
-                # Run node deduplication and merging
-                deduplicate_and_merge_nodes()
-                # Persist evolved node parameters and update confidence breathing lifecycle
-                for nid in list(graph_instance.nodes.keys()):
-                    state_tensor = graph_instance.nodes[nid]
-                    mean_act = float(state_tensor.mean().detach().cpu())
-                    
-                    orig_id = graph_instance._original_id(nid)
-                    metrics = node_metrics.setdefault(nid, {
-                        "confidence": DEFAULT_CONFIDENCE, "plateau_factor": 0.0,
-                        "is_grounded": orig_id in REALITY_ANCHORS,
-                        "help_chain": False, "source_tag": "internal", "is_quarantined": False
-                    })
-                    
-                    confidence = metrics.get("confidence", DEFAULT_CONFIDENCE)
-                    
-                    # Reality Anchors are grounded (permanent 0.95 confidence)
-                    if orig_id in REALITY_ANCHORS:
-                        confidence = 0.95
-                    else:
-                        # Confidence breathing: degree of node in networkx graph
-                        degree = graph_instance.nx_graph.degree(orig_id) if orig_id in graph_instance.nx_graph else 0
-                        # Active nodes with bridges gain confidence, isolated/inactive decay
-                        if degree > 0 and abs(mean_act) > 0.05:
-                            delta = (abs(mean_act) * 0.02) + (degree * 0.005)
-                        else:
-                            delta = -0.04 # Decay
-                            
-                        confidence = min(1.0, max(0.0, confidence + delta))
-                    
-                    metrics["confidence"] = confidence
-                    node_metrics[nid] = metrics
-                    
-                    # Legacy nodes pruning: if confidence decays to 0.15 or below, delete node
-                    # (only if it is not grounded and has no original text)
-                    text_content = get_node_text(orig_id)
-                    if confidence <= 0.15 and orig_id not in REALITY_ANCHORS and not text_content:
-                        logger.info(f"[Lifecycle] Pruning dead legacy node: {orig_id}")
-                        graph_instance.remove_node(orig_id)
-                        delete_node(orig_id)
-                    else:
-                        save_node(
-                            orig_id, state_tensor, mean_act, 
-                            confidence, metrics.get("plateau_factor", 0.0), 
-                            orig_id in REALITY_ANCHORS, metrics.get("help_chain", False),
-                            text_content=text_content, source_tag=metrics.get("source_tag", "internal")
-                        )
+                await asyncio.to_thread(run_single_ode_cycle)
             except Exception as e:
                 logger.error(f"[ODE] Evolution step failed: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(15)
             
-    async def register_with_all_known_peers():
-        await asyncio.sleep(5)  # Wait for uvicorn to settle
-        my_ip = "127.0.0.1"
+    async def register_on_chain_heartbeat():
+        """
+        Autonomous On-Chain Registration & Heartbeat Daemon.
+        Registers this node's IP:port on TheForge.sol via registerNode() on boot,
+        and periodically renews the heartbeat to stay active in getActiveNodes().
+        """
+        await asyncio.sleep(2)  # Wait for uvicorn to settle
+        port = os.getenv("PORT", "8000")
         try:
-            my_ip = socket.gethostbyname(socket.gethostname())
-        except Exception:
-            pass
-        my_addr = f"{my_ip}:8000"
-        
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for peer in list(KNOWN_PEERS):
-                if peer == my_addr or peer.startswith("127.0.0.1") or peer.startswith("localhost"):
-                    continue
-                try:
-                    await client.post(f"http://{peer}/p2p/register", json={"peer_address": my_addr})
-                    logger.info(f"[P2P] Registered ourselves ({my_addr}) with peer {peer} on startup")
-                except Exception:
-                    pass
+            from aethelnet_node.forge_client import resolve_wan_ip
+            my_ip = resolve_wan_ip()
+        except Exception as e:
+            logger.error(f"[TheForge Web3] FATAL: Failed to resolve routable WAN IP: {e}")
+            import os
+            os._exit(1)
+            
+        my_addr = f"{my_ip}:{port}"
+
+        logger.info(f"[TheForge Web3] Bootstrapping autonomous on-chain registration for {my_addr}...")
+        try:
+            receipt = await asyncio.to_thread(forge_client.register_node, my_addr)
+            logger.info(
+                f"[TheForge Web3] On-Chain registration SUCCESS: Tx {receipt['tx_hash']} | Block {receipt['block_number']}"
+            )
+        except Exception as e:
+            logger.error(f"[TheForge Web3] On-Chain registration FAILED: {e}")
+
+        # Fetch initial peer set from contract
+        try:
+            active_nodes = await asyncio.to_thread(forge_client.get_active_nodes)
+            logger.info(f"[TheForge Web3] Boot peer discovery: {len(active_nodes)} live node(s) in TheForge: {active_nodes}")
+        except Exception as e:
+            logger.error(f"[TheForge Web3] Peer discovery from TheForge failed: {e}")
+
+        # Periodic on-chain heartbeat loop (every 35 minutes to respect 30-min Paymaster throttle)
+        while True:
+            await asyncio.sleep(2100)
+            try:
+                logger.info(f"[TheForge Web3] Renewing on-chain heartbeat for {my_addr} via Paymaster...")
+                receipt = await asyncio.to_thread(forge_client.register_node, my_addr)
+                if receipt.get("rate_limited"):
+                    logger.info(f"[TheForge Web3] Heartbeat deferred: {receipt.get('message')}")
+                else:
+                    logger.info(f"[TheForge Web3] Heartbeat confirmed in block {receipt.get('block_number')} (Tx: {receipt.get('tx_hash')})")
+            except Exception as e:
+                logger.warning(f"[TheForge Web3] Heartbeat renewal failed: {e}")
 
     async def cosmic_telemetry_watcher():
         await asyncio.sleep(10)  # Wait for GNN to settle
@@ -2038,7 +2040,7 @@ async def startup_event():
     asyncio.create_task(autonomous_curiosity_scouter())
     asyncio.create_task(hunt_for_peers())
     asyncio.create_task(gossip_truth_to_peers())
-    asyncio.create_task(register_with_all_known_peers())
+    asyncio.create_task(register_on_chain_heartbeat())
     asyncio.create_task(real_time_p2p_sync())
     asyncio.create_task(cosmic_telemetry_watcher())
     
