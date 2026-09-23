@@ -16,31 +16,14 @@ logger = logging.getLogger("LGNN.P2P")
 
 p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
 
-# TheForge Contract Config (Ensure this matches your local deployment!)
-RPC_URL = "http://127.0.0.1:8545"
-FORGE_ADDRESS = "0x81E3E4Cba25546b2e8339Bf9d7c46F6707cE88f2" # Update this after re-deploy!
-FORGE_ABI = [
-    {"inputs":[],"name":"getActiveNodes","outputs":[{"internalType":"string[]","name":"","type":"string[]"}],"stateMutability":"view","type":"function"}
-]
+from aethelnet_node.forge_client import forge_client
 
 def get_known_peers() -> List[str]:
-    """Dynamically fetches active peers from the Aethelnet DAO (TheForge)."""
-    try:
-        w3 = Web3(Web3.HTTPProvider(RPC_URL))
-        if not w3.is_connected():
-            logger.warning("[P2P] Blockchain RPC unreachable. Falling back to local peers.")
-            return ["127.0.0.1:8001"]
-            
-        contract = w3.eth.contract(address=FORGE_ADDRESS, abi=FORGE_ABI)
-        active_ips = contract.functions.getActiveNodes().call()
-        
-        if not active_ips:
-            return ["127.0.0.1:8001"]
-            
-        return [ip for ip in active_ips if ip != ""]
-    except Exception as e:
-        logger.error(f"[P2P] Error fetching peers from blockchain: {e}")
-        return ["127.0.0.1:8001"]
+    """
+    Dynamically fetches active peers strictly from TheForge.sol on-chain registry.
+    Eliminates all static mocks and fallbacks.
+    """
+    return forge_client.get_active_nodes()
 
 class PeerSyncPayload(BaseModel):
     peer_id: str
