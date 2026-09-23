@@ -37,8 +37,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ubuntu/aethelnet-node
-ExecStart=/home/ubuntu/aethelnet-node/.venv/bin/uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8000
+WorkingDirectory=%h/aethelnet-node
+ExecStart=%h/aethelnet-node/.venv/bin/uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
 
@@ -48,7 +48,7 @@ SVC
         systemctl --user daemon-reload
         systemctl --user enable aethelnet-node.service
         systemctl --user restart aethelnet-node.service
-        sudo loginctl enable-linger ubuntu || true
+        sudo loginctl enable-linger "$USER" 2>/dev/null || true
 EOF
 
     echo "✅ Setup on $SERVER complete!"

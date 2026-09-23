@@ -48,7 +48,7 @@ class DocumentReaderSensor(BaseSensor):
         valid_exts = {".txt", ".md", ".csv", ".json", ".py", ".js", ".vue", ".html", ".css"}
         files_to_process = []
         
-        for root, _, files in os.walk(self.directory, followlinks=True):
+        for root, _, files in os.walk(self.directory, followlinks=False):
             for f in files:
                 if os.path.splitext(f)[1].lower() in valid_exts:
                     full_path = os.path.join(root, f)

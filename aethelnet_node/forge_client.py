@@ -7,6 +7,7 @@ and gasless governance integration via AethelnetPaymaster on Ethereum Sepolia.
 import os
 import json
 import logging
+from pathlib import Path
 import requests
 from typing import List, Dict, Any, Optional
 from web3 import Web3
@@ -218,6 +219,22 @@ class ForgeClient:
 
         return acc
 
+    def _find_contracts_file(self, rel_path: str) -> Optional[Path]:
+        candidate_bases = []
+        if env_dir := os.getenv("AETHELNET_CONTRACTS_DIR"):
+            candidate_bases.append(Path(env_dir))
+        candidate_bases.extend([
+            Path(__file__).resolve().parents[2] / "aethelnet-contracts",
+            Path.home() / "aethelnet-contracts",
+            Path.cwd() / "contracts",
+            Path.cwd()
+        ])
+        for base in candidate_bases:
+            candidate = base / rel_path
+            if candidate.is_file():
+                return candidate
+        return None
+
     def _resolve_contract_address(self, explicit_addr: Optional[str]) -> str:
         if explicit_addr:
             return explicit_addr
@@ -226,8 +243,8 @@ class ForgeClient:
         if env_addr:
             return env_addr
             
-        manifest_path = "/home/ubuntu/aethelnet-contracts/deployed_addresses.json"
-        if os.path.exists(manifest_path):
+        manifest_path = self._find_contracts_file("deployed_addresses.json")
+        if manifest_path:
             try:
                 with open(manifest_path, "r") as f:
                     manifest = json.load(f)
@@ -239,8 +256,8 @@ class ForgeClient:
         return DEFAULT_FORGE_ADDRESS
 
     def _resolve_abi(self) -> list:
-        artifact_path = "/home/ubuntu/aethelnet-contracts/artifacts/contracts/TheForge.sol/TheForge.json"
-        if os.path.exists(artifact_path):
+        artifact_path = self._find_contracts_file("artifacts/contracts/TheForge.sol/TheForge.json")
+        if artifact_path:
             try:
                 with open(artifact_path, "r") as f:
                     data = json.load(f)
