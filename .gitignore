@@ -22,8 +22,6 @@ scratch/
 .visited_*.json
 *.sqlite3
 *.db
-*.db-shm
-*.db-wal
 .env
 .idea/
 .vscode/

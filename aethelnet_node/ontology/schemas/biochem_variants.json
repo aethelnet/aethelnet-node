@@ -1,0 +1,144 @@
+{
+  "app_id": "biochem_variants",
+  "name": "Precision Oncology & Variant Dissonance",
+  "version": "1.0.0",
+  "domain": "biomedical_genomics",
+  "description": "Clinical variant interpretation multigraph resolving conflicting pathogenicity claims (ClinVar) and AlphaFold structural stability across TP53, BRCA1, and PTEN.",
+  "icon": "activity",
+  "default_view": "graph",
+  "entities": {
+    "gene": {
+      "type_id": "gene",
+      "name": "Human Cancer Gene",
+      "description": "Human tumor suppressor or oncogene (e.g. TP53, BRCA1, PTEN)",
+      "color": "#2563EB",
+      "icon": "dna",
+      "required_properties": ["symbol", "gene_id"],
+      "optional_properties": ["chromosome", "canonical_transcript"]
+    },
+    "protein_variant": {
+      "type_id": "protein_variant",
+      "name": "Missense Variant",
+      "description": "Single amino acid substitution causing potential conformational disruption",
+      "color": "#7C3AED",
+      "icon": "circle",
+      "required_properties": ["hgvs_p", "variant_id"],
+      "optional_properties": ["residue_index", "wildtype_aa", "mutant_aa", "cadd_score"]
+    },
+    "phenotype": {
+      "type_id": "phenotype",
+      "name": "Cancer Syndrome / Phenotype",
+      "description": "Malignant disease predisposition (e.g. Li-Fraumeni syndrome, Hereditary Breast & Ovarian Cancer)",
+      "color": "#DC2626",
+      "icon": "alert-triangle",
+      "required_properties": ["name"],
+      "optional_properties": ["medgen_id", "inheritance"]
+    },
+    "structural_domain": {
+      "type_id": "structural_domain",
+      "name": "Structural Domain (AlphaFold)",
+      "description": "3D functional domain or catalytic interface determined via AlphaFold 3D coordinates",
+      "color": "#0891B2",
+      "icon": "box",
+      "required_properties": ["domain_name"],
+      "optional_properties": ["plddt_wildtype", "pdb_id", "surface_exposure"]
+    },
+    "clinical_evidence": {
+      "type_id": "clinical_evidence",
+      "name": "Clinical Laboratory Dossier",
+      "description": "Certified diagnostic submission or peer-reviewed functional study (ClinVar / PubMed)",
+      "color": "#059669",
+      "icon": "file-text",
+      "required_properties": ["submitter_name"],
+      "optional_properties": ["evaluation_date", "review_criteria", "assertion_criteria"]
+    }
+  },
+  "relations": {
+    "located_in_gene": {
+      "type_id": "located_in_gene",
+      "name": "Located in Gene",
+      "description": "Maps the missense variant to its parent coding gene locus",
+      "color": "#64748B",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["gene"],
+      "is_conflict_candidate": false
+    },
+    "maps_to_domain": {
+      "type_id": "maps_to_domain",
+      "name": "Maps to Structural Domain",
+      "description": "Spatial localization of the substitution within a 3D AlphaFold functional domain",
+      "color": "#0891B2",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["structural_domain"],
+      "is_conflict_candidate": false
+    },
+    "drives_pathogenicity": {
+      "type_id": "drives_pathogenicity",
+      "name": "Drives Pathogenicity / Disease",
+      "description": "Clinical assertion that the variant causes or elevates risk for the specific cancer phenotype",
+      "color": "#DC2626",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["phenotype"],
+      "is_conflict_candidate": true
+    },
+    "refutes_pathogenicity": {
+      "type_id": "refutes_pathogenicity",
+      "name": "Refutes Pathogenicity (Benign / VUS)",
+      "description": "Clinical assertion that the variant is benign, tolerating, or of uncertain significance for the phenotype",
+      "color": "#059669",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["phenotype"],
+      "is_conflict_candidate": true
+    },
+    "destabilizes_core": {
+      "type_id": "destabilizes_core",
+      "name": "Destabilizes Structural Core",
+      "description": "AlphaFold pLDDT collapse (<50) or steric clash disrupting hydrophobic packing",
+      "color": "#EF4444",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["structural_domain"],
+      "is_conflict_candidate": true
+    },
+    "retains_stable_core": {
+      "type_id": "retains_stable_core",
+      "name": "Retains Wild-Type Folding",
+      "description": "AlphaFold high-confidence structure (pLDDT >85) showing tolerated solvent-exposed substitution",
+      "color": "#10B981",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["structural_domain"],
+      "is_conflict_candidate": true
+    },
+    "supported_by": {
+      "type_id": "supported_by",
+      "name": "Evidenced by Dossier",
+      "description": "Links clinical assertion to primary laboratory submission or functional assay",
+      "color": "#64748B",
+      "is_directional": true,
+      "allowed_source_types": ["protein_variant"],
+      "allowed_target_types": ["clinical_evidence"],
+      "is_conflict_candidate": false
+    }
+  },
+  "conflict_rules": [
+    {
+      "rule_id": "clinvar_pathogenicity_conflict",
+      "name": "ClinVar Pathogenicity Dissonance",
+      "conflicting_relations": ["drives_pathogenicity", "refutes_pathogenicity"],
+      "severity": "critical",
+      "description": "Clinical Contradiction: Multiple certified clinical diagnostic laboratories submit diametrically opposed clinical classifications (Pathogenic vs. Benign / VUS) for the identical patient missense variant."
+    },
+    {
+      "rule_id": "structural_stability_conflict",
+      "name": "AlphaFold Structural Dissonance",
+      "conflicting_relations": ["destabilizes_core", "retains_stable_core"],
+      "severity": "suspicious",
+      "description": "Biophysical Contradiction: AlphaFold structural modeling predicts severe core destabilization (pLDDT collapse) while experimental assay reports wild-type structural stability."
+    }
+  ]
+}

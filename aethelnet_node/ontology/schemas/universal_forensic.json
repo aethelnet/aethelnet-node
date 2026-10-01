@@ -1,0 +1,115 @@
+{
+  "app_id": "blank_investigation",
+  "name": "Universal Forensic Investigation",
+  "version": "1.0.0",
+  "domain": "forensics",
+  "description": "Universal Forensic Canvas for Unstructured Evidence, Claims & Contradiction Mapping.",
+  "icon": "shield-alert",
+  "default_view": "graph",
+  "entities": {
+    "person": {
+      "type_id": "person",
+      "name": "Person / Akteur",
+      "description": "Individuum, Zeuge, Begünstigter oder Amtsträger",
+      "color": "#000000",
+      "icon": "user",
+      "required_properties": ["name"],
+      "optional_properties": ["role", "jurisdiction"]
+    },
+    "organization": {
+      "type_id": "organization",
+      "name": "Organisation / Institut",
+      "description": "Unternehmen, Museum, Behörde, Stiftung oder Briefkastenfirma",
+      "color": "#000000",
+      "icon": "building",
+      "required_properties": ["name"],
+      "optional_properties": ["registration_number", "country"]
+    },
+    "asset": {
+      "type_id": "asset",
+      "name": "Vermögenswert / Objekt",
+      "description": "Kulturgut, Bankkonto, Immobilie, Transaktion oder Vertrag",
+      "color": "#000000",
+      "icon": "box",
+      "required_properties": ["title"],
+      "optional_properties": ["identifier", "value", "current_location"]
+    },
+    "document": {
+      "type_id": "document",
+      "name": "Beweisdokument / Quelle",
+      "description": "Vertrag, Kontoauszug, Primärakte, Leak oder Zeugenaussage",
+      "color": "#555555",
+      "icon": "file-text",
+      "required_properties": ["title"],
+      "optional_properties": ["date", "source_archive"]
+    }
+  },
+  "relations": {
+    "controls": {
+      "type_id": "controls",
+      "name": "Kontrolliert / Besitzt",
+      "description": "Faktische wirtschaftliche oder operative Kontrolle",
+      "color": "#000000",
+      "is_directional": true,
+      "allowed_source_types": ["person", "organization"],
+      "allowed_target_types": ["asset", "organization"],
+      "is_conflict_candidate": true
+    },
+    "claims": {
+      "type_id": "claims",
+      "name": "Behauptet / Beansprucht",
+      "description": "Offizielles Narrativ, Schenkungsbehauptung oder Rechtsanspruch",
+      "color": "#0033FF",
+      "is_directional": true,
+      "allowed_source_types": ["person", "organization"],
+      "allowed_target_types": ["asset", "organization"],
+      "is_conflict_candidate": true
+    },
+    "denies": {
+      "type_id": "denies",
+      "name": "Dementiert / Bestreitet",
+      "description": "Formelle Gegenerklärung oder Abstreiten einer Beziehung",
+      "color": "#0033FF",
+      "is_directional": true,
+      "allowed_source_types": ["person"],
+      "allowed_target_types": ["organization", "asset"],
+      "is_conflict_candidate": true
+    },
+    "unlawfully_appropriated": {
+      "type_id": "unlawfully_appropriated",
+      "name": "Widerrechtlich Angeeignet / Entwendet",
+      "description": "Raub, Veruntreuung, Plünderung oder Korruptionsabfluss",
+      "color": "#FF0000",
+      "is_directional": true,
+      "allowed_source_types": ["person", "organization"],
+      "allowed_target_types": ["asset"],
+      "is_conflict_candidate": true
+    },
+    "documented_in": {
+      "type_id": "documented_in",
+      "name": "Belegt Durch Quelle",
+      "description": "Schriftlicher Primärbeleg oder Aktenfundstelle",
+      "color": "#666666",
+      "is_directional": true,
+      "allowed_source_types": ["person", "organization", "asset"],
+      "allowed_target_types": ["document"],
+      "is_conflict_candidate": false
+    }
+  },
+  "conflict_rules": [
+    {
+      "rule_id": "unlawful_vs_claimed",
+      "name": "Unrechtmäßiger Erwerb vs. Offizieller Anspruch",
+      "conflicting_relations": ["unlawfully_appropriated", "claims"],
+      "severity": "critical",
+      "description": "Widerspruch: Ein offizieller Erwerbsanspruch kollidiert mit Belegen über unrechtmäßige Aneignung oder Plünderung."
+    },
+    {
+      "rule_id": "control_vs_denial",
+      "name": "Tatsächliche Kontrolle trotz Dementi",
+      "conflicting_relations": ["controls", "denies"],
+      "severity": "critical",
+      "description": "Widerspruch: Ein Akteur bestreitet Verbindung zu einer Struktur, während Dokumente tatsächliche Kontrolle beweisen."
+    }
+  ]
+}

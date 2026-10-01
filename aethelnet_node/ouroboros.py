@@ -1,3 +1,4 @@
+import os
 import asyncio
 import httpx
 import logging
@@ -12,91 +13,178 @@ class OuroborosLoop:
     sends it to the Mistral Coach for semantic critique, and then ingests 
     the Coach's feedback to mutate its own topology.
     """
-    def __init__(self, ollama_url="http://localhost:11434/api/generate", lgnn_ingest_url="http://localhost:8001/api/lgnn/universal_ingest"):
+    def __init__(self, ollama_url="http://localhost:11434/api/generate", lgnn_ingest_url=None):
         self.ollama_url = ollama_url
-        self.lgnn_ingest_url = lgnn_ingest_url
+        port = os.getenv("PORT", "8000")
+        self.lgnn_ingest_url = lgnn_ingest_url or os.getenv("AETHELNET_NODE_URL", f"http://127.0.0.1:{port}/api/lgnn/universal_ingest")
 
     async def extract_dream_concepts(self):
-        """Fetches the current most resonant nodes from the graph."""
-        from aethelnet_node.main import node_metrics
-        # Get top 5 most confident concepts that aren't gravity/pi
-        sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
-        dream_concepts = []
-        for nid, metrics in sorted_nodes:
-            if not metrics.get("is_grounded", False):
-                dream_concepts.append(nid)
-            if len(dream_concepts) >= 5:
-                break
+        """Fetches the current most resonant nodes from the graph using topological energy and graph centrality."""
+        from aethelnet_node.main import node_metrics, graph_instance
+        
+        # 1. Rank nodes by topological activation energy and degree centrality
+        ranked_nodes = []
+        for safe_id in list(graph_instance.nodes.keys()):
+            orig_id = graph_instance._original_id(safe_id)
+            metrics = node_metrics.get(orig_id, {})
+            if metrics.get("is_grounded", False):
+                continue
+            energy = graph_instance.get_node_energy(orig_id)
+            degree = graph_instance.nx_graph.degree(orig_id) if graph_instance.nx_graph.has_node(orig_id) else 0
+            score = energy + 0.15 * degree
+            ranked_nodes.append((orig_id, score))
+
+        ranked_nodes.sort(key=lambda x: x[1], reverse=True)
+        dream_concepts = [nid for nid, _ in ranked_nodes[:5]]
+
+        # Fallback to node_metrics if graph has no ungrounded nodes
+        if not dream_concepts:
+            sorted_nodes = sorted(node_metrics.items(), key=lambda x: x[1].get("confidence", 0.0), reverse=True)
+            for nid, metrics in sorted_nodes:
+                if not metrics.get("is_grounded", False):
+                    dream_concepts.append(nid)
+                if len(dream_concepts) >= 5:
+                    break
         return dream_concepts
 
     async def query_coach(self, dream_concepts):
-        """Asks Gemini (Primary) or Mistral (Fallback) to critique the LGNN's current abstract thought."""
+        """Asks Gemini, OpenRouter, or local Mistral to critique the LGNN's thought, with autonomous offline fallback."""
+        if not dream_concepts:
+            return None
+            
         import os
-        from dotenv import load_dotenv
-        load_dotenv()
-        api_key = os.environ.get("GEMINI_API_KEY")
-        
-        prompt = f"""You are the semantic Coach for a Liquid Graph Neural Network (LGNN).
-The LGNN does not speak human language; it only feels topological physics.
-Right now, the LGNN is forming a highly resonant 'thought' connecting these abstract concepts:
-{', '.join(dream_concepts)}
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except ImportError:
+            pass
 
-Your job is to critique this connection. Does it make logical or semantic sense? 
-Provide a short, harsh, 2-sentence feedback loop correcting or validating its thought process. 
-Your exact words will be physically ingested by the LGNN as new vectors."""
+        gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
 
-        # Try Gemini First
-        if api_key:
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={api_key}"
-            gemini_payload = {
-                "contents": [{"parts":[{"text": prompt}]}]
-            }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                try:
-                    resp = await client.post(gemini_url, json=gemini_payload)
+        prompt = (
+            "You are the semantic Coach for a Liquid Graph Neural Network (LGNN).\n"
+            "The LGNN does not speak human language; it only feels topological physics.\n"
+            f"Right now, the LGNN is forming a highly resonant 'thought' connecting these abstract concepts:\n"
+            f"{', '.join(dream_concepts)}\n\n"
+            "Your job is to critique this connection. Does it make logical or semantic sense?\n"
+            "Provide a short, harsh, 2-sentence feedback loop correcting or validating its thought process.\n"
+            "Your exact words will be physically ingested by the LGNN as new vectors."
+        )
+
+        # 1. Try Gemini
+        if gemini_api_key:
+            model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_api_key}"
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(gemini_url, json=payload)
                     if resp.status_code == 200:
                         data = resp.json()
                         text = data["candidates"][0]["content"]["parts"][0]["text"]
-                        logger.info("[Ouroboros] Gemini Ultra/Pro successfully critiqued the dream.")
-                        return text
+                        logger.info(f"[Ouroboros] Gemini ({model}) successfully critiqued the dream.")
+                        return text.strip()
                     else:
-                        logger.warning(f"[Ouroboros] Gemini failed with {resp.status_code}. Falling back to Mistral...")
-                except Exception as e:
-                    logger.warning(f"[Ouroboros] Gemini connection failed: {e}. Falling back to Mistral...")
-        else:
-            logger.warning("[Ouroboros] No GEMINI_API_KEY found. Defaulting directly to local Mistral...")
+                        logger.warning(f"[Ouroboros] Gemini returned status {resp.status_code}. Falling back...")
+            except Exception as e:
+                logger.warning(f"[Ouroboros] Gemini connection failed: {e}. Falling back...")
 
-        # Fallback to Mistral (Ollama)
-        payload = {
-            "model": "mistral",
-            "prompt": prompt,
-            "stream": False
-        }
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 2. Try OpenRouter
+        if openrouter_api_key:
+            model = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a harsh, precise cybernetic coach."},
+                    {"role": "user", "content": prompt}
+                ]
+            }
             try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {openrouter_api_key}"}
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = data["choices"][0]["message"]["content"]
+                        logger.info(f"[Ouroboros] OpenRouter ({model}) successfully critiqued the dream.")
+                        return text.strip()
+            except Exception as e:
+                logger.warning(f"[Ouroboros] OpenRouter connection failed: {e}")
+
+        # 3. Try Local Mistral via Ollama
+        try:
+            payload = {"model": "mistral", "prompt": prompt, "stream": False}
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(self.ollama_url, json=payload)
                 if response.status_code == 200:
-                    return response.json().get("response", "")
-            except Exception as e:
-                logger.error(f"[Ouroboros] Coach Mistral is unreachable: {e}")
-        return None
+                    text = response.json().get("response", "")
+                    if text:
+                        logger.info("[Ouroboros] Local Mistral coach successfully critiqued the dream.")
+                        return text.strip()
+        except Exception:
+            pass
+
+        # 4. Offline Algorithmic Topological Synthesis Fallback
+        logger.info("[Ouroboros] All LLM providers offline. Performing autonomous topological synthesis.")
+        from aethelnet_node.main import graph_instance
+        resonances = []
+        for i in range(len(dream_concepts)):
+            for j in range(i + 1, len(dream_concepts)):
+                res = graph_instance.get_node_resonance(dream_concepts[i], dream_concepts[j])
+                resonances.append((dream_concepts[i], dream_concepts[j], res))
+
+        if resonances:
+            highest = max(resonances, key=lambda x: x[2])
+            lowest = min(resonances, key=lambda x: x[2])
+            feedback = (
+                f"Topological tension detected: '{highest[0]}' resonates strongly with '{highest[1]}' (r={highest[2]:.2f}), "
+                f"while '{lowest[0]}' and '{lowest[1]}' diverge (r={lowest[2]:.2f}). Synthesizing bridge."
+            )
+        else:
+            feedback = f"Topological cluster formed around {', '.join(dream_concepts)}. Re-aligning latent flow."
+        return feedback
 
     async def ingest_feedback(self, feedback_text):
-        """Feeds Mistral's critique back into the LGNN's universal ingest."""
-        payload = {
-            "bot_name": "Ouroboros_Coach",
-            "observation": feedback_text,
-            "confidence": 0.95, # The coach is highly trusted
-            "context_tags": ["ouroboros", "coach_feedback", "semantic_correction"]
-        }
-        
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        """Feeds the coach's critique back into the LGNN, preferring direct in-memory ingest."""
+        import time
+        from aethelnet_node.main import text_to_embedding, graph_instance, node_metrics
+        from aethelnet_node.database import save_node
+
+        node_id = "Obs_Ouroboros_Coach"
+        try:
+            emb = text_to_embedding(feedback_text)
+            graph_instance.add_node(node_id, emb)
+            node_metrics[node_id] = {
+                "confidence": 0.95,
+                "text_content": feedback_text,
+                "source_tag": "Ouroboros_Coach",
+                "is_grounded": False
+            }
+            save_node(
+                node_id, emb, 0.0, 0.95, 0.0, False, False,
+                text_content=feedback_text, source_tag="Ouroboros_Coach"
+            )
+            logger.info(f"[Ouroboros] In-Memory Feedback Ingested: {node_id} -> {feedback_text[:60]}...")
+            return True
+        except Exception as e:
+            logger.warning(f"[Ouroboros] In-memory ingest failed ({e}), falling back to HTTP: {self.lgnn_ingest_url}")
+            payload = {
+                "bot_name": "Ouroboros_Coach",
+                "observation": feedback_text,
+                "confidence": 0.95,
+                "context_tags": ["ouroboros", "coach_feedback", "semantic_correction"]
+            }
             try:
-                await client.post(self.lgnn_ingest_url, json=payload)
-                logger.info(f"[Ouroboros] Ingested Coach Feedback: {feedback_text[:50]}...")
-            except Exception as e:
-                logger.error(f"[Ouroboros] Failed to ingest feedback: {e}")
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(self.lgnn_ingest_url, json=payload)
+                    return True
+            except Exception as e2:
+                logger.error(f"[Ouroboros] HTTP fallback also failed: {e2}")
+                return False
 
     async def run_loop(self):
         logger.info("[Ouroboros] The cybernetic feedback loop has awakened.")
@@ -110,9 +198,8 @@ Your exact words will be physically ingested by the LGNN as new vectors."""
                 from aethelnet_node.decoders.omni_decoder import UniversalOmniDecoder
                 from aethelnet_node.main import node_metrics
                 try:
-                    # Construct node dicts expected by the decoder
                     nodes_data = [{"id": nid, "vector": node_metrics.get(nid, {}).get("vector", np.zeros(768))} for nid in dream]
-                    resonance = np.ones(len(nodes_data)) # Simplified resonance for now
+                    resonance = np.ones(len(nodes_data))
                     decoder = UniversalOmniDecoder()
                     decoder.decode(nodes_data, resonance)
                 except Exception as e:

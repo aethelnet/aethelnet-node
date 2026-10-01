@@ -7,12 +7,12 @@
     "AethelSpider_Art": 449560.0,
     "LocalAudioScanner": 4165.0,
     "LocalDocumentScanner": 17553015.0,
-    "SystemVitalsMonitor": 5239061.9,
-    "EntropySensor_Chaos": 284000.0,
-    "WeatherSensor_Berlin": 167920.0,
-    "SpaceSensor_ISS": 101360.0,
+    "SystemVitalsMonitor": 5251239.398430002,
+    "EntropySensor_Chaos": 284522.14384,
+    "WeatherSensor_Berlin": 168280.80504,
+    "SpaceSensor_ISS": 101560.0,
     "AethelSpider_OSINT": 850.0,
     "AethelSpider_KALI": 180.0,
-    "AethelSpider_Science": 12540.0,
-    "AethelSpider_Crypto": 29687.5
+    "AethelSpider_Science": 14482.878724999997,
+    "AethelSpider_Crypto": 52474.06595500001
 }

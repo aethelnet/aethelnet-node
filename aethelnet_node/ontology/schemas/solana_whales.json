@@ -1,0 +1,163 @@
+{
+  "app_id": "solana_whales",
+  "name": "Solana Whale & MEV Forensics",
+  "version": "1.0.0",
+  "domain": "onchain_forensics",
+  "description": "High-throughput on-chain transaction clustering, whale wallet tracking, liquidity drains, and MEV syndicate forensics.",
+  "icon": "activity",
+  "default_view": "graph",
+  "entities": {
+    "whale_wallet": {
+      "type_id": "whale_wallet",
+      "name": "Whale Wallet",
+      "description": "Solana address holding >50,000 SOL or substantial token supply (>2% of pool)",
+      "color": "#0284C7",
+      "icon": "key",
+      "required_properties": ["address"],
+      "optional_properties": ["sol_balance", "known_label", "first_active"]
+    },
+    "cex_hot_wallet": {
+      "type_id": "cex_hot_wallet",
+      "name": "CEX Hot Wallet / Router",
+      "description": "Centralized exchange deposit router (Binance, Coinbase, Kraken, OKX)",
+      "color": "#EAB308",
+      "icon": "briefcase",
+      "required_properties": ["address", "exchange_name"],
+      "optional_properties": ["volume_24h", "compliance_tier"]
+    },
+    "dex_liquidity_pool": {
+      "type_id": "dex_liquidity_pool",
+      "name": "DEX Liquidity Pool",
+      "description": "Automated Market Maker pool (Raydium, Orca Whirlpool, Meteora DLMM)",
+      "color": "#10B981",
+      "icon": "layers",
+      "required_properties": ["pool_address", "pair"],
+      "optional_properties": ["tvl_usd", "fee_rate"]
+    },
+    "mev_searcher": {
+      "type_id": "mev_searcher",
+      "name": "MEV Bot / Searcher",
+      "description": "Jito MEV bundle searcher, atomic arbitrageur, or sandwich bot",
+      "color": "#DC2626",
+      "icon": "zap",
+      "required_properties": ["bot_address"],
+      "optional_properties": ["jito_tip_account", "strategy_type"]
+    },
+    "token_mint": {
+      "type_id": "token_mint",
+      "name": "Token Mint Address",
+      "description": "SPL Token mint contract on Solana L1",
+      "color": "#8B5CF6",
+      "icon": "disc",
+      "required_properties": ["mint_address", "ticker"],
+      "optional_properties": ["total_supply", "decimals", "deployer"]
+    },
+    "syndicate_cluster": {
+      "type_id": "syndicate_cluster",
+      "name": "Syndicate / Insider Cluster",
+      "description": "Co-funded multi-wallet ring orchestrated by single entity",
+      "color": "#F97316",
+      "icon": "users",
+      "required_properties": ["cluster_id"],
+      "optional_properties": ["funder_root", "wallet_count", "total_sol_flow"]
+    }
+  },
+  "relations": {
+    "transferred_sol": {
+      "type_id": "transferred_sol",
+      "name": "Transferred SOL",
+      "description": "Direct on-chain SOL transfer between accounts",
+      "color": "#0284C7",
+      "is_directional": true,
+      "allowed_source_types": ["whale_wallet", "cex_hot_wallet", "mev_searcher", "syndicate_cluster"],
+      "allowed_target_types": ["whale_wallet", "cex_hot_wallet", "dex_liquidity_pool", "mev_searcher", "syndicate_cluster"],
+      "is_conflict_candidate": false
+    },
+    "funded_by": {
+      "type_id": "funded_by",
+      "name": "Initial Funding From",
+      "description": "Account received its genesis SOL funding from this source",
+      "color": "#D97706",
+      "is_directional": true,
+      "allowed_source_types": ["whale_wallet", "mev_searcher", "syndicate_cluster"],
+      "allowed_target_types": ["whale_wallet", "cex_hot_wallet", "syndicate_cluster"],
+      "is_conflict_candidate": false
+    },
+    "routed_to_cex": {
+      "type_id": "routed_to_cex",
+      "name": "Routed Deposit To CEX",
+      "description": "Liquidity transferred directly to CEX deposit hot wallet for fiat exit",
+      "color": "#EAB308",
+      "is_directional": true,
+      "allowed_source_types": ["whale_wallet", "syndicate_cluster"],
+      "allowed_target_types": ["cex_hot_wallet"],
+      "is_conflict_candidate": false
+    },
+    "sniped_first_block": {
+      "type_id": "sniped_first_block",
+      "name": "Sniped Block Zero",
+      "description": "Purchased token supply within first slot of liquidity addition",
+      "color": "#DC2626",
+      "is_directional": true,
+      "allowed_source_types": ["mev_searcher", "whale_wallet", "syndicate_cluster"],
+      "allowed_target_types": ["token_mint", "dex_liquidity_pool"],
+      "is_conflict_candidate": true
+    },
+    "drained_pool": {
+      "type_id": "drained_pool",
+      "name": "Drained Pool Liquidity",
+      "description": "Sudden removal or dumping of liquidity from AMM pool",
+      "color": "#EF4444",
+      "is_directional": true,
+      "allowed_source_types": ["whale_wallet", "syndicate_cluster"],
+      "allowed_target_types": ["dex_liquidity_pool"],
+      "is_conflict_candidate": true
+    },
+    "wash_trades_with": {
+      "type_id": "wash_trades_with",
+      "name": "Wash Trades With",
+      "description": "Circular or artificial transaction volume generated between paired wallets",
+      "color": "#F97316",
+      "is_directional": false,
+      "allowed_source_types": ["whale_wallet", "syndicate_cluster"],
+      "allowed_target_types": ["whale_wallet", "syndicate_cluster"],
+      "is_conflict_candidate": true
+    },
+    "claims_ownership": {
+      "type_id": "claims_ownership",
+      "name": "Claims Attribution Of",
+      "description": "Entity formally identifies wallet address as their asset or desk",
+      "color": "#10B981",
+      "is_directional": true,
+      "allowed_source_types": ["cex_hot_wallet"],
+      "allowed_target_types": ["whale_wallet"],
+      "is_conflict_candidate": true
+    },
+    "refutes_ownership": {
+      "type_id": "refutes_ownership",
+      "name": "Refutes Attribution Of",
+      "description": "Entity explicitly denies owning or operating the wallet address",
+      "color": "#EF4444",
+      "is_directional": true,
+      "allowed_source_types": ["cex_hot_wallet"],
+      "allowed_target_types": ["whale_wallet"],
+      "is_conflict_candidate": true
+    }
+  },
+  "conflict_rules": [
+    {
+      "rule_id": "attribution_conflict",
+      "name": "Widersprüchliche Wal-Zurechnung",
+      "conflicting_relations": ["claims_ownership", "refutes_ownership"],
+      "severity": "critical",
+      "description": "Widerspruch: Eine Börse oder Institution bestreitet die Inhaberschaft einer Wal-Adresse, während On-Chain-Deposit-Muster oder offizielle Dokumente das Gegenteil belegen."
+    },
+    {
+      "rule_id": "sniper_vs_organic",
+      "name": "Insider-Sniping vs. Reiner Liquiditätsanbieter",
+      "conflicting_relations": ["sniped_first_block", "drained_pool"],
+      "severity": "high",
+      "description": "Konflikt: Dieselbe Entität tritt sowohl als Liquiditätsprovider als auch als aggressiver Block-0 Sniper und Pool-Drainer auf."
+    }
+  ]
+}

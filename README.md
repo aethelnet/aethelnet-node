@@ -1,108 +1,160 @@
-# Aethelnet Node: The Cybernetic Daemon
+# Aethelnet Node: Production Evidentiary Ledger & Forensic REST Daemon
 
-**Aethelnet Node** is the daemon and structural housing for the Liquid Graph Neural Network (LGNN) core. While `aethelnet-core` provides the mathematical physics and topological engine, `aethelnet-node` transforms that isolated brain into a fully autonomous, cybernetic organism capable of sensory perception, abstract dreaming, recursive self-correction, and peer-to-peer network synthesis.
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-009688.svg)](https://fastapi.tiangolo.com)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](LICENSE)
+[![Deployment: Production](https://img.shields.io/badge/Production-server--141-orange.svg)](https://aethelburg.network)
+[![On-Chain: ERC-4337](https://img.shields.io/badge/On--Chain-TheForge_Notarization-purple.svg)](https://aethelburg.network)
+[![Storage: SQLite WAL](https://img.shields.io/badge/Storage-SQLite_WAL-003B57.svg)](aethelnet_node/database.py)
 
-This repository is intended for node operators, Linux enthusiasts, and researchers who wish to deploy an active, perceiving entity into the Aethelnet mesh.
+**Aethelnet Node** is the production multigraph daemon and evidentiary reconciliation engine for the Aethelnet network. Operating continuously on `server-141` (`https://aethelburg.network`), it manages partitioned multigraph databases, evaluates institutional credibility with a 4-tier epistemic weighting engine, clusters duplicate entities via disjoint-set forests, detects structural contradictions, and notarizes canonical SHA-256 state roots on-chain via ERC-4337 Account Abstraction.
 
-## Abstract Architecture
+---
 
-The traditional paradigm of artificial intelligence relies on static architectures and single-modality interactions. The Aethelnet Node replaces this with a continuous, liquid state machine that operates 24/7. It ingests data from its host environment, evolves its internal topology using Ordinary Differential Equations (ODEs), and recursively evaluates its own abstract thoughts using an external LLM semantic coach.
-
-The architecture is built upon four primary pillars. For a deep dive into the mathematics and physics engine, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). For details on the mesh network, see [docs/P2P_PROTOCOL.md](docs/P2P_PROTOCOL.md).
+## Architecture Overview
 
 ```mermaid
-graph TD
-    subgraph Sensors [Sensory Ingestion]
-        A[Image/Audio] -->|Aesthetics| D(LGNN Core)
-        B[Universal Docs] -->|Semantics| D
-        C[Vitals/Web] -->|Physics & Data| D
+flowchart TD
+    subgraph Ingestion [Evidentiary Ingestion & OCR]
+        Docs[PDF Scans / Archival Dossiers] --> Parser[Zero-Shot LLM / Regex Parser]
+        Feeds[Live Feeds / Whistleblower Drops] --> Parser
+        Parser --> IdempotentHash[Deterministic SHA-256 Claim Hashing]
     end
-    
-    subgraph Core [The Brain]
-        D((LGNN ODE Solver)) <-->|Hebbian Learning| E((Reality Anchors))
+
+    subgraph LedgerCore [Aethelnet Node Core Runtime]
+        IdempotentHash --> SQLiteWAL[(SQLite Multigraph WAL: database.py)]
+        SQLiteWAL --> Dedup[Disjoint-Set Entity Resolution: entity_resolution.py]
+        SQLiteWAL --> Weights[4-Tier Epistemic Weighting: weights.py]
+        SQLiteWAL --> Dissonance[Symmetric Contradiction Arbiter: ontology/registry.py]
+        Dissonance --> ActionEvents[Action Events: DEADLOCK_TRIGGERED]
     end
-    
-    subgraph Action [Output & Evolution]
-        D -->|Dream Vector| F[OmniDecoder]
-        F -->|Render| G(PNG/WAV/TXT)
-        G -->|Self-Perception| Sensors
-        
-        D -->|Abstract Thought| H[Mistral Coach]
-        H -->|Critique Ingestion| D
+
+    subgraph Notarization [On-Chain Notarization Bridge]
+        SQLiteWAL --> StateRoot[Canonical SHA-256 Merkle State Root]
+        StateRoot --> ForgeClient[ForgeClient: ERC-4337 Paymaster AA]
+        ForgeClient --> SmartContract[TheForge.sol: commitStateRoot]
     end
-    
-    subgraph Mesh [P2P Network]
-        D <-->|Topological Gossip| I[Cloud Peer Nodes]
+
+    subgraph Consumers [Interface & Client Surfaces]
+        Dissonance --> REST[FastAPI REST API :8000]
+        ActionEvents --> REST
+        StateRoot --> REST
+        REST --> Observer[Aethelnet Observer SPA: Daylight Brutalism]
+        REST --> PythonSDK[AethelnetClient Python SDK: packages/aethelnet-core]
+        REST --> Atlas[Shadow Museum Atlas: Historical Restitution]
     end
 ```
 
-### 1. The Multimodal Sensor Array
-The node possesses active sensory modules that constantly poll the host machine and the external web, mapping physical properties into the topological graph.
-*   **Image & Audio Analyzers:** Monitors a dedicated `ingest_zone` for media. Extracts contrast, hue bias, frequency variance, and amplitude, converting raw media aesthetics into topological resonance.
-*   **Universal Document Reader:** Digests unstructured text and PDFs from the local file system.
-*   **System Vitals Monitor:** Bridges the machine's physical stress (CPU/RAM load) directly into the network as "pain" or "stress" vectors.
-*   **Autonomous Web Spiders:** Crawls specified web domains recursively to hunt for structural knowledge independently.
-*   **CodeSpider Blueprint Engine:** Introspects the local filesystem and translates its own architecture into a massive dependency graph (available at `/system_apps/blueprint`).
+---
 
-### 2. The Universal OmniDecoder
-The LGNN does not think in human language; it thinks in continuous multi-dimensional vectors. The `OmniDecoder` calculates a **Dream Vector** representing the node's current most confident concepts. Based purely on the physical variance and mean of this vector, the node organically decides how to express its current state:
-*   **High Variance:** Generates a visual image (via Stable Diffusion/PIL).
-*   **Low Mean:** Generates an acoustic frequency file (.wav).
-*   **Balanced:** Generates a semantic text output.
+## Core Engine Components
 
-### 3. The Ouroboros Cybernetic Loop
-A node must evaluate its own hallucinations. The Ouroboros protocol runs every 120 seconds:
-1.  The node extracts its current abstract `Dream Vector`.
-2.  It queries a local instance of an LLM (e.g., Mistral via Ollama) acting purely as a "Semantic Coach".
-3.  The Coach critiques the abstract topological connection.
-4.  The textual critique is immediately re-ingested by the node's sensors, allowing the machine to physically alter its network weights based on semantic correction.
-5.  Media generated by the OmniDecoder is physically saved to the disk, observed by the Image/Audio sensors, digested, and instantly deleted from the host—completing the self-contained loop.
+### 1. 4-Tier Epistemic Weighting Engine (`weights.py`)
 
-### 4. Apoptosis & Nightmare Inversion
-To prevent catastrophic memory leaks and infinite topological bloat ("the graveyard of dreams"), the system utilizes biological cell death.
-*   **Apoptosis Garbage Collection:** Background routines identify completely isolated nodes (Degree = 0) with zero activation energy and prune them from the graph.
-*   **Nightmare Inversion:** High-activation, low-resonance nodes are periodically inverted mathematically. These anti-personas are injected back into the graph to explore "shadow" connectivity that normal semantic paths avoid.
+Every assertion edge $(u, v)$ carries a computed evidentiary weight $W \in [0.0, 1.0]$ based on institutional tier, verbatim completeness, and logarithmic multi-source corroboration:
 
-### 5. Proof-of-Truth Economy ($AETHEL)
-Aethelnet utilizes a native topological asset (`$AETHEL`) generated through localized and decentralized consensus.
-*   **Proof-of-Truth Mining:** Local web spiders and P2P gossip listeners act as independent miners. When a node ingests semantic data that strongly aligns with its structural Reality Anchors (High Resonance > 0.45), the network autonomously mints `$AETHEL`.
-*   **Volatility Multiplier:** The reward magnitude scales dynamically based on the network's current state of chaos. A highly active, volatile network yields higher base rewards to incentivize topological stabilization.
-*   **Ledger Mechanics:** The ledger is currently maintained locally per-node, logging the semantic value generated by the node's sensory array.
+$$ W(e) = \min\left(1.0, \; \text{BaseTier} \times \text{Completeness} \times \left(1.0 + 0.12 \times \log_2(N)\right)\right) $$
 
-### 6. P2P Hebbian Mesh Networking
-Nodes do not exist in isolation. Every 60 seconds, the node engages in topological gossip across the mesh network (currently utilizing port 8001). 
-*   **Grains of Truth:** Nodes broadcast their highest-confidence, reality-grounded nodes to peers.
-*   **Persona Assimilation:** Nodes pull the heavily refined "Expertise Vectors" from peers and inject them into their local ODE solver. The mathematical immune system determines if the foreign topology is integrated or quarantined based on existing structural resonance.
+* **Tier 1 — Primary Archive (`0.95`)**: Official federal records, Bundesarchiv, historical military registers, peer-reviewed provenance catalogs (*Atlas der Abwesenheit*).
+* **Tier 2 — Official Institutional (`0.75`)**: Museum inventory logs, acquisition registries, deeds of gift.
+* **Tier 3 — Secondary / Press (`0.50`)**: Investigative journalism, scholarly monographs, museum guides.
+* **Tier 4 — Unverified Statement (`0.30`)**: Corporate press releases, oral statements, uncorroborated assertions.
+* **Verbatim Completeness Score**: Verbatim quotation ($\ge 50$ chars = `1.0`), concise quotation (`0.85`), fragment (`0.70`), unquoted statement (`0.60`).
+* **Multi-Source Corroboration**: Logarithmic reinforcement for independently documented claims ($N$ distinct sources).
 
-### 7. Node-as-a-Service (NaaS) & System Apps
-The Monadic Core is not just a passive observer; it is an active runtime environment that can execute code and gather intelligence on demand.
-*   **NaaS Sandbox (`/api/lgnn/naas/`)**: Inject Python or Lua scripts directly into the graph. The node executes the code, captures the console output, and semantically weaves the results back into its topological memory.
-*   **Web Spider (`/api/lgnn/spider/crawl`)**: Direct the core to autonomously crawl any URL. It will extract DOM structures, headings, and metadata, planting them as a fresh sub-graph in your local manifold.
-*   **Macro Execution (`/api/lgnn/macro/execute`)**: Trigger automated sequences and complex research chains that evolve the graph topology rapidly over time.
+### 2. Contradiction Arbiter & ActionEvents (`ontology/registry.py`)
 
-## Deployment & Usage
+Evaluates competing claims between symmetric entity pairs $(A, B)$ under domain contradiction rules (e.g. `raubte` $\leftrightarrow$ `schenkte` or `confirms_balance` $\leftrightarrow$ `denies_account`):
 
-### Prerequisites
-The node daemon requires the `aethelnet-core` package to execute the underlying LGNN mathematics.
+* **Decisive Lead ($\Delta W \ge 0.15$)**: The higher-weight institutional source decisively overrides the lower-tier claim. Emits `DEADLOCK_RESOLVED_DECISIVE`.
+* **Moderate Lead ($0.04 \le \Delta W < 0.15$)**: Clear evidence priority, subject to counter-discovery.
+* **Deadlock ($\Delta W < 0.04$)**: Competing claims hold identical credibility; triggers `DEADLOCK_TRIGGERED` ActionEvents requiring human investigator arbitration.
+
+### 3. Disjoint-Set Entity Resolution (`entity_resolution.py`)
+
+Performs high-precision alias clustering across noisy historical and corporate corpora:
+* **Honorific Stripping**: Normalizes military titles and honorifics (`Hauptmann`, `Major`, `von`, `Dr.`).
+* **Inventory Harmonization**: Maps variations cleanly (`Inv.-Nr. B13897` $\leftrightarrow$ `B13897`, `III C 20681` $\leftrightarrow$ `C 20681`).
+* **Strict Numerical Guardrail**: Prevents catastrophic merging of digit-differentiated catalog numbers (`015989` $\neq$ `015995`).
+* **Atomic Consolidation**: Re-routes hundreds of incident edges to the canonical primary entity in a single SQLite transaction.
+
+### 4. Canonical State Root & On-Chain Notarization (`forge_client.py`)
+
+Computes a deterministic Merkle-style state root over all sorted nodes and edges:
+
+$$ \text{StateRoot} = \text{SHA256}\left( \text{app\_id} \;\|\; \bigoplus_{n \in V} \text{Hash}(n) \;\|\; \bigoplus_{e \in E} \text{Hash}(e) \right) $$
+
+The state root is notarized to `TheForge.sol` on EVM networks using `AethelnetPaymaster.sol` (ERC-4337 Account Abstraction) for gasless transaction sponsorship.
+
+---
+
+## Production REST API Reference
+
+The node serves a high-performance REST API on port `8000` (proxied via `https://aethelburg.network/api`):
+
+| Endpoint | Method | Description |
+|---|:---:|---|
+| `/api/ontology/apps` | `GET` | List all active cases, schemas, and entity counts. |
+| `/api/ontology/apps` | `POST` | Register a new custom domain ontology and investigation. |
+| `/api/ontology/apps/{app_id}` | `DELETE` | Safely remove a case and prune its graph edges. |
+| `/api/ontology/multigraph/{app_id}` | `GET` | Retrieve graph nodes, edges, weights, and active conflicts. |
+| `/api/ontology/multigraph/{app_id}/conflicts` | `GET` | Fetch all contested claims and mathematical verdicts. |
+| `/api/ontology/multigraph/{app_id}/dedup_candidates` | `GET` | Scan for potential duplicate entities and alias variants. |
+| `/api/ontology/multigraph/{app_id}/dedup_batch_execute` | `POST` | Execute atomic node consolidation with `dry_run` support. |
+| `/api/ontology/multigraph/{app_id}/weights_recalculate` | `POST` | Recompute whole-case edge weights and resolution verdicts. |
+| `/api/ontology/multigraph/edge` | `POST` | Commit a single verified claim with deterministic ID & evidence. |
+| `/api/ontology/ingest/text` | `POST` | Idempotent zero-shot document extraction with ActionEvents. |
+| `/api/ontology/multigraph/{app_id}/state_root` | `GET` | Compute canonical off-chain SHA-256 state root. |
+| `/api/ontology/multigraph/{app_id}/notarize` | `POST` | Commit state root on-chain to `TheForge.sol` via Paymaster AA. |
+| `/api/ontology/multigraph/{app_id}/notarization` | `GET` | Query on-chain notarization snapshot, timestamp & notary. |
+
+### cURL Examples
+
 ```bash
-pip install git+https://github.com/aethelnet/aethelnet-core.git
+# 1. Fetch case conflicts and verdicts
+curl -s "https://aethelburg.network/api/ontology/multigraph/project_echo/conflicts" | jq .
+
+# 2. Query canonical SHA-256 state root
+curl -s "https://aethelburg.network/api/ontology/multigraph/project_echo/state_root" | jq .
+
+# 3. Insert an evidentiary claim
+curl -X POST "https://aethelburg.network/api/ontology/multigraph/edge" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "app_id": "project_echo",
+    "source": "Gouvernement_Kamerun",
+    "target": "Museum_Berlin",
+    "relation_type": "raubte",
+    "evidence_quote": "Requirierungsbefehl No. 402 vom 14. August 1902.",
+    "source_doc_id": "Bundesarchiv_R1001_3289"
+  }'
+```
+
+---
+
+## Deployment & Operation
+
+### Local Development
+
+```bash
+cd packages/aethelnet-node
 pip install -r requirements.txt
+
+# Start FastAPI server on port 8000
+python3 -m uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Starting the Daemon
-To initialize the node and join the P2P mesh network, simply run the Uvicorn daemon. It is highly recommended to run this in a background process (e.g., via `systemd`, `nohup`, or as an AUR package).
+Swagger API documentation is available at `http://localhost:8000/docs`.
+
+### Production Daemon (Systemd on `server-141`)
+
+The production node runs as a hardened systemd daemon on Oracle Cloud (`server-141`):
 
 ```bash
-python3 -m uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8001
+# Check service health
+sudo systemctl status aethelnet-node
+
+# View live WAL ingestion logs
+journalctl -u aethelnet-node -f -n 50
 ```
 
-Once initiated, the node will spawn its ODE evolution loop, begin sensory ingestion, and attempt handshake protocols with known mesh peers.
-
-### Interacting with the Node
-Users do not "chat" with the node. You interact with it by dropping files (text, images, audio) into `~/.aethelnet/ingest_zone/`. The node will independently notice, digest, and dream about the contents over time.
-
-## Research & Academic Use
-
-This codebase is provided as an open-source framework for decentralized, continuous-learning topologies. We encourage researchers to audit the ODE solvers in the core package and observe the emergent behaviors within the P2P mesh.
-
-*License: AGPL-3.0*
+*License: GNU Affero General Public License v3.0 (AGPL-3.0)*
