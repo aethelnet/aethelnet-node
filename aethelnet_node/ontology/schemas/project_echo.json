@@ -1,0 +1,134 @@
+{
+  "app_id": "project_echo",
+  "name": "Project Echo (Colonial Restitution)",
+  "version": "1.0.0",
+  "domain": "cultural_restitution",
+  "description": "Autonomous Provenance Hunter & Restitution Multigraph for Colonial Looted Art.",
+  "icon": "shield-alert",
+  "default_view": "graph",
+  "entities": {
+    "artifact": {
+      "type_id": "artifact",
+      "name": "Kulturgut / Objekt",
+      "description": "Historisches Artefakt, Zeremonialobjekt oder Kunstwerk",
+      "color": "#FFFFFF",
+      "icon": "box",
+      "required_properties": ["title", "inventory_number"],
+      "optional_properties": ["origin_region", "material", "current_depot"]
+    },
+    "actor": {
+      "type_id": "actor",
+      "name": "Historischer Akteur",
+      "description": "Militäroffizier, Händler, Kolonialbeamter oder Herrscher",
+      "color": "#AAAAAA",
+      "icon": "user",
+      "required_properties": ["name"],
+      "optional_properties": ["role", "military_rank", "dates"]
+    },
+    "institution": {
+      "type_id": "institution",
+      "name": "Institution / Museum",
+      "description": "Übersee-Museum, Völkerkundemuseum, Archiv oder Auktionshaus",
+      "color": "#0066FF",
+      "icon": "building",
+      "required_properties": ["name"],
+      "optional_properties": ["city", "country", "ddb_id"]
+    },
+    "location": {
+      "type_id": "location",
+      "name": "Geographischer Ort",
+      "description": "Herkunftsort, Expeditionsziel oder Kolonialstation",
+      "color": "#D89F3C",
+      "icon": "map-pin",
+      "required_properties": ["name"],
+      "optional_properties": ["coordinates", "country"]
+    },
+    "source_doc": {
+      "type_id": "source_doc",
+      "name": "Primärquelle / Publikation",
+      "description": "Expeditionstagebuch, Inventarbuch, wissenschaftliches Paper",
+      "color": "#555555",
+      "icon": "file-text",
+      "required_properties": ["title"],
+      "optional_properties": ["author", "year", "pages"]
+    }
+  },
+  "relations": {
+    "raubte": {
+      "type_id": "raubte",
+      "name": "Raubte (Kriegsbeute)",
+      "description": "Entwendung unter militärischer Gewalt oder Gewaltandrohung",
+      "color": "#FF3333",
+      "is_directional": true,
+      "allowed_source_types": ["actor"],
+      "allowed_target_types": ["artifact"],
+      "is_conflict_candidate": true
+    },
+    "schenkte": {
+      "type_id": "schenkte",
+      "name": "Schenkte (Formeller Zugang)",
+      "description": "Formelle Eintragung als patriotische oder private Schenkung",
+      "color": "#0066FF",
+      "is_directional": true,
+      "allowed_source_types": ["actor"],
+      "allowed_target_types": ["institution", "artifact"],
+      "is_conflict_candidate": true
+    },
+    "verwahrt_in": {
+      "type_id": "verwahrt_in",
+      "name": "Verwahrt in Depot",
+      "description": "Aktueller oder historischer Verwahrort des Objekts",
+      "color": "#D89F3C",
+      "is_directional": true,
+      "allowed_source_types": ["artifact"],
+      "allowed_target_types": ["institution"],
+      "is_conflict_candidate": false
+    },
+    "transportierte": {
+      "type_id": "transportierte",
+      "name": "Transportierte",
+      "description": "Logistische Verbringung aus der Kolonie nach Europa",
+      "color": "#888888",
+      "is_directional": true,
+      "allowed_source_types": ["actor"],
+      "allowed_target_types": ["artifact"],
+      "is_conflict_candidate": false
+    },
+    "dokumentiert_in": {
+      "type_id": "dokumentiert_in",
+      "name": "Dokumentiert in",
+      "description": "Schriftlicher Beleg in Primär- oder Sekundärquelle",
+      "color": "#555555",
+      "is_directional": true,
+      "allowed_source_types": ["artifact", "actor"],
+      "allowed_target_types": ["source_doc"],
+      "is_conflict_candidate": false
+    },
+    "verdacht_auf": {
+      "type_id": "verdacht_auf",
+      "name": "Verdacht auf Kolonialdelikt",
+      "description": "Forensischer Verdacht auf militärische Plünderung basierend auf Primärdokumenten",
+      "color": "#FF8800",
+      "is_directional": true,
+      "allowed_source_types": ["actor"],
+      "allowed_target_types": ["artifact"],
+      "is_conflict_candidate": true
+    }
+  },
+  "conflict_rules": [
+    {
+      "rule_id": "raub_vs_schenkung",
+      "name": "Kollidierender Erwerbstitel",
+      "conflicting_relations": ["raubte", "schenkte"],
+      "severity": "critical",
+      "description": "Widerspruch: Offizielles Museums-Narrativ behauptet freiwillige Schenkung, während Primärquellen militärischen Raub beweisen."
+    },
+    {
+      "rule_id": "verdacht_vs_schenkung",
+      "name": "Schenkung unter Deliktverdacht",
+      "conflicting_relations": ["verdacht_auf", "schenkte"],
+      "severity": "warning",
+      "description": "Widerspruch: Schenkungstitel kollidiert mit forensischem Deliktverdacht."
+    }
+  ]
+}

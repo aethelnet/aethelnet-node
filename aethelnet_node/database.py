@@ -3,10 +3,12 @@ import json
 import numpy as np
 import torch
 import os
-from typing import Dict, Any, List, Tuple
-from dotenv import load_dotenv
-
-load_dotenv()
+from typing import Dict, Any, List, Tuple, Optional
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 DB_PROVIDER = os.getenv("DB_PROVIDER", "sqlite").lower()
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
@@ -79,8 +81,9 @@ def get_db_connection():
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
         return PostgresConnectionWrapper(conn)
     else:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000;")
         return conn
 
 def init_db():
@@ -89,6 +92,14 @@ def init_db():
     """
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    if DB_PROVIDER != "postgresql":
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            conn.commit()
+        except Exception:
+            pass
     
     # Create Nodes Table
     cursor.execute("""
@@ -153,6 +164,14 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN app_id TEXT DEFAULT 'general'")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN entity_type TEXT DEFAULT 'concept'")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN label TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
 
     # Create Commits Table for Git-like version tracking of snapshots
     cursor.execute("""
@@ -200,7 +219,7 @@ def init_db():
     """)
     conn.commit()
     
-    # Create Edges Table
+    # Create Edges Table (Legacy 1-Head / Continuous Diffusion)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS lgnn_edges (
         source TEXT,
@@ -212,6 +231,36 @@ def init_db():
     )
     """)
     conn.commit()
+
+    # Create Typed Multigraph Edges Table (Aethelnet V3 Sovereign Intelligence)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lgnn_multigraph_edges (
+        edge_id TEXT PRIMARY KEY,
+        app_id TEXT DEFAULT 'general',
+        source TEXT NOT NULL,
+        target TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        weight REAL DEFAULT 1.0,
+        timestamp TEXT DEFAULT '',
+        evidence_quote TEXT DEFAULT '',
+        source_doc_id TEXT DEFAULT '',
+        is_contested INTEGER DEFAULT 0,
+        conflict_notes TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (source) REFERENCES lgnn_nodes(id) ON DELETE CASCADE,
+        FOREIGN KEY (target) REFERENCES lgnn_nodes(id) ON DELETE CASCADE
+    )
+    """)
+    conn.commit()
+
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_multi_edges_app ON lgnn_multigraph_edges(app_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_multi_edges_src_tgt ON lgnn_multigraph_edges(source, target);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_multi_edges_relation ON lgnn_multigraph_edges(relation_type);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_multi_edges_contested ON lgnn_multigraph_edges(is_contested);")
+        conn.commit()
+    except Exception:
+        conn.rollback()
     
     # Create Kanban Columns Table
     cursor.execute("""
@@ -281,6 +330,22 @@ def init_db():
     )
     """)
     
+    # Create Syntheses Table for Hebbian-triggered insights
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lgnn_syntheses (
+        id TEXT PRIMARY KEY,
+        source_a TEXT NOT NULL,
+        source_b TEXT NOT NULL,
+        resonance REAL NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        vault_path TEXT DEFAULT '',
+        is_crystallized INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
+    
     # Seed default columns if empty
     cursor.execute("SELECT COUNT(*) as count FROM kanban_columns")
     if cursor.fetchone()["count"] == 0:
@@ -305,30 +370,66 @@ def deserialize_tensor(blob: bytes, dim: int = 128) -> torch.Tensor:
     # Ensure correct dimension
     if len(arr) != dim:
         arr = np.resize(arr, (dim,))
-    return torch.tensor(arr)
+    tensor = torch.tensor(arr)
+    tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+    norm = float(tensor.norm())
+    if norm < 1e-6:
+        tensor = torch.randn(dim)
+        tensor = tensor / (tensor.norm() + 1e-8)
+    else:
+        tensor = tensor / norm
+    return tensor
 
-def save_node(node_id: str, embedding: torch.Tensor, mean_activation: float, confidence: float, plateau_factor: float, is_grounded: bool, help_chain: bool, text_content: str = "", is_archived: bool = False, source_tag: str = "internal", is_quarantined: bool = False, node_type: str = "standard", meta_data: str = "{}"):
+def save_node(
+    node_id: str,
+    embedding: torch.Tensor,
+    mean_activation: float,
+    confidence: float,
+    plateau_factor: float,
+    is_grounded: bool,
+    help_chain: bool,
+    text_content: str = "",
+    is_archived: bool = False,
+    source_tag: str = "internal",
+    is_quarantined: bool = False,
+    node_type: str = "standard",
+    meta_data: Optional[str] = None,
+    app_id: str = "general",
+    entity_type: str = "concept",
+    label: str = ""
+):
     conn = get_db_connection()
     cursor = conn.cursor()
     emb_bytes = serialize_tensor(embedding)
     cursor.execute("""
-    INSERT INTO lgnn_nodes (id, embedding, text_content, mean_activation, confidence, plateau_factor, is_grounded, help_chain, is_archived, source_tag, is_quarantined, node_type, meta_data, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO lgnn_nodes (
+        id, embedding, text_content, mean_activation, confidence, plateau_factor,
+        is_grounded, help_chain, is_archived, source_tag, is_quarantined, node_type,
+        meta_data, app_id, entity_type, label, last_updated
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
         embedding = excluded.embedding,
-        text_content = excluded.text_content,
+        text_content = CASE WHEN excluded.text_content != '' THEN excluded.text_content ELSE lgnn_nodes.text_content END,
         mean_activation = excluded.mean_activation,
         confidence = excluded.confidence,
         plateau_factor = excluded.plateau_factor,
         is_grounded = excluded.is_grounded,
         help_chain = excluded.help_chain,
         is_archived = excluded.is_archived,
-        source_tag = excluded.source_tag,
+        source_tag = CASE WHEN excluded.source_tag != 'internal' THEN excluded.source_tag ELSE lgnn_nodes.source_tag END,
         is_quarantined = excluded.is_quarantined,
-        node_type = excluded.node_type,
-        meta_data = excluded.meta_data,
+        node_type = CASE WHEN excluded.node_type != 'standard' THEN excluded.node_type ELSE lgnn_nodes.node_type END,
+        meta_data = CASE WHEN excluded.meta_data IS NOT NULL AND excluded.meta_data != '{}' THEN excluded.meta_data ELSE lgnn_nodes.meta_data END,
+        app_id = CASE WHEN excluded.app_id != 'general' THEN excluded.app_id ELSE lgnn_nodes.app_id END,
+        entity_type = CASE WHEN excluded.entity_type != 'concept' THEN excluded.entity_type ELSE lgnn_nodes.entity_type END,
+        label = CASE WHEN excluded.label != '' THEN excluded.label ELSE lgnn_nodes.label END,
         last_updated = CURRENT_TIMESTAMP
-    """, (node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor, 1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0, source_tag, 1 if is_quarantined else 0, node_type, meta_data))
+    """, (
+        node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor,
+        1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0,
+        source_tag, 1 if is_quarantined else 0, node_type, meta_data, app_id, entity_type, label
+    ))
     conn.commit()
     conn.close()
 
@@ -417,7 +518,7 @@ def mark_observation_done(job_id: int):
     conn.close()
 
 
-def save_edge(source: str, target: str, weight: float):
+def save_edge(source: str, target: str, weight: float, label: Optional[str] = None):
     # Enforce alphabetical ordering of source/target to prevent duplicate bidirectional keys
     u, v = sorted([source, target])
     conn = get_db_connection()
@@ -439,6 +540,220 @@ def delete_edge(source: str, target: str):
     conn.commit()
     conn.close()
 
+# =====================================================================
+# AETHELNET V3 TYPED MULTIGRAPH ENGINE
+# =====================================================================
+def save_multigraph_edge(
+    edge_id: str,
+    source: str,
+    target: str,
+    relation_type: str,
+    app_id: str = "general",
+    weight: float = 1.0,
+    timestamp: str = "",
+    evidence_quote: str = "",
+    source_doc_id: str = "",
+    is_contested: int = 0,
+    conflict_notes: str = ""
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO lgnn_multigraph_edges (
+        edge_id, app_id, source, target, relation_type, weight,
+        timestamp, evidence_quote, source_doc_id, is_contested, conflict_notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(edge_id) DO UPDATE SET
+        app_id = excluded.app_id,
+        source = excluded.source,
+        target = excluded.target,
+        relation_type = excluded.relation_type,
+        weight = excluded.weight,
+        timestamp = excluded.timestamp,
+        evidence_quote = excluded.evidence_quote,
+        source_doc_id = excluded.source_doc_id,
+        is_contested = excluded.is_contested,
+        conflict_notes = excluded.conflict_notes
+    """, (edge_id, app_id, source, target, relation_type, weight, timestamp, evidence_quote, source_doc_id, is_contested, conflict_notes))
+    conn.commit()
+    conn.close()
+
+def get_multigraph_edges(
+    app_id: Optional[str] = None,
+    source: Optional[str] = None,
+    target: Optional[str] = None,
+    relation_type: Optional[str] = None,
+    is_contested: Optional[bool] = None
+) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    query = "SELECT * FROM lgnn_multigraph_edges WHERE 1=1"
+    params = []
+    if app_id:
+        query += " AND app_id = ?"
+        params.append(app_id)
+    if source:
+        query += " AND source = ?"
+        params.append(source)
+    if target:
+        query += " AND target = ?"
+        params.append(target)
+    if relation_type:
+        query += " AND relation_type = ?"
+        params.append(relation_type)
+    if is_contested is not None:
+        query += " AND is_contested = ?"
+        params.append(1 if is_contested else 0)
+    query += " ORDER BY created_at DESC"
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    edges = [dict(r) for r in rows]
+    conn.close()
+    return edges
+
+def delete_multigraph_edge(edge_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lgnn_multigraph_edges WHERE edge_id = ?", (edge_id,))
+    conn.commit()
+    conn.close()
+
+def clear_case_multigraph(app_id: str):
+    """Purges all edges and nodes associated with an investigation."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM lgnn_multigraph_edges WHERE app_id = ?", (app_id,))
+    cursor.execute("DELETE FROM lgnn_nodes WHERE app_id = ?", (app_id,))
+    conn.commit()
+    conn.close()
+
+def compute_case_state_root(app_id: str) -> Dict[str, Any]:
+    """
+    Computes an immutable, deterministic SHA-256 state root for a case multigraph.
+    Orders nodes and edges canonically to ensure reproducible cryptographic roots.
+    """
+    import hashlib
+    edges = get_multigraph_edges(app_id=app_id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, text_content FROM lgnn_nodes WHERE app_id = ? ORDER BY id ASC", (app_id,))
+    node_rows = cursor.fetchall()
+    conn.close()
+
+    node_hashes = []
+    for r in node_rows:
+        nid = r["id"] if isinstance(r, dict) else r[0]
+        ntxt = r["text_content"] if isinstance(r, dict) else r[1]
+        nh = hashlib.sha256(f"node:{nid}:{ntxt}".encode("utf-8")).hexdigest()
+        node_hashes.append(nh)
+    node_hashes.sort()
+
+    edge_hashes = []
+    for e in edges:
+        eh = hashlib.sha256(
+            f"edge:{e.get('edge_id')}:{e.get('source')}:{e.get('target')}:{e.get('relation_type')}:{e.get('weight')}".encode("utf-8")
+        ).hexdigest()
+        edge_hashes.append(eh)
+    edge_hashes.sort()
+
+    combined_payload = f"{app_id}::" + ":".join(node_hashes) + "||" + ":".join(edge_hashes)
+    state_root = "0x" + hashlib.sha256(combined_payload.encode("utf-8")).hexdigest()
+
+    return {
+        "app_id": app_id,
+        "state_root": state_root,
+        "node_count": len(node_rows),
+        "edge_count": len(edges)
+    }
+
+
+def sync_conflicts_for_app(app_id: str, persist_to_db: bool = True) -> List[Dict[str, Any]]:
+    try:
+        from .ontology import registry
+    except ImportError:
+        from aethelnet_node.ontology import registry
+    edges = get_multigraph_edges(app_id=app_id)
+    conflicts = registry.detect_conflicts(app_id, edges)
+    
+    if persist_to_db and conflicts:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE lgnn_multigraph_edges SET is_contested = 0, conflict_notes = '' WHERE app_id = ?", (app_id,))
+        update_params = []
+        for conflict in conflicts:
+            note = f"{conflict.get('rule_name')}: {conflict.get('description')}"
+            for ce in conflict.get("edges", []):
+                eid = ce.get("edge_id")
+                if eid:
+                    update_params.append((note, eid))
+        if update_params:
+            cursor.executemany("UPDATE lgnn_multigraph_edges SET is_contested = 1, conflict_notes = ? WHERE edge_id = ?", update_params)
+        conn.commit()
+        conn.close()
+    return conflicts
+
+def get_app_multigraph(app_id: str) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if app_id and app_id != "general":
+        cursor.execute("""
+            SELECT * FROM lgnn_nodes 
+            WHERE (app_id = ? 
+               OR id IN (SELECT source FROM lgnn_multigraph_edges WHERE app_id = ?)
+               OR id IN (SELECT target FROM lgnn_multigraph_edges WHERE app_id = ?))
+              AND (is_archived = 0 OR is_archived IS NULL)
+        """, (app_id, app_id, app_id))
+    else:
+        cursor.execute("SELECT * FROM lgnn_nodes WHERE is_archived = 0 OR is_archived IS NULL")
+    node_rows = cursor.fetchall()
+    nodes = []
+    for r in node_rows:
+        d = dict(r)
+        d.pop("embedding", None)
+        nodes.append(d)
+    conn.close()
+
+    # Read-only conflict evaluation in memory (0 disk writes)
+    conflicts = sync_conflicts_for_app(app_id, persist_to_db=False)
+    edges = get_multigraph_edges(app_id=app_id)
+
+    # Synthesize endpoint nodes for edges where node was not explicitly stored
+    existing_node_ids = {n["id"] for n in nodes}
+    for e in edges:
+        for endpoint_id in [e.get("source"), e.get("target")]:
+            if endpoint_id and endpoint_id not in existing_node_ids:
+                nodes.append({
+                    "id": endpoint_id,
+                    "label": endpoint_id.replace("_", " "),
+                    "entity_type": "entity",
+                    "app_id": app_id,
+                    "confidence": 0.8,
+                    "is_contested": bool(e.get("is_contested", False))
+                })
+                existing_node_ids.add(endpoint_id)
+
+    # For massive datasets (>120 conflicts), return the top 120 most salient contradictions to keep JSON payload lean
+    display_conflicts = conflicts
+    if len(conflicts) > 120:
+        display_conflicts = sorted(
+            conflicts, 
+            key=lambda c: (1 if c.get("severity") == "critical" else 0, float(c.get("weight_delta", 0))), 
+            reverse=True
+        )[:120]
+
+    return {
+        "app_id": app_id,
+        "nodes": nodes,
+        "edges": edges,
+        "conflicts": display_conflicts,
+        "metrics": {
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+            "contested_edges": sum(1 for e in edges if e.get("is_contested")),
+            "active_conflicts": len(conflicts)
+        }
+    }
+
 def load_graph_state(dim: int = 128) -> Tuple[Dict[str, torch.Tensor], List[Tuple[str, str, float]], Dict[str, Dict[str, Any]]]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -450,6 +765,13 @@ def load_graph_state(dim: int = 128) -> Tuple[Dict[str, torch.Tensor], List[Tupl
     for row in cursor.fetchall():
         nid = row["id"]
         nodes[nid] = deserialize_tensor(row["embedding"], dim)
+        meta_str = row["meta_data"] if "meta_data" in row.keys() else "{}"
+        try:
+            meta_obj = json.loads(meta_str) if isinstance(meta_str, str) else (meta_str or {})
+        except Exception:
+            meta_obj = {}
+        parent_id = meta_obj.get("parent_id", "root") if isinstance(meta_obj, dict) else "root"
+
         metrics[nid] = {
             "mean_activation": row["mean_activation"],
             "confidence": row["confidence"],
@@ -459,7 +781,8 @@ def load_graph_state(dim: int = 128) -> Tuple[Dict[str, torch.Tensor], List[Tupl
             "source_tag": row["source_tag"] if "source_tag" in row.keys() else "internal",
             "is_quarantined": bool(row["is_quarantined"]) if "is_quarantined" in row.keys() else False,
             "node_type": row["node_type"] if "node_type" in row.keys() else "standard",
-            "meta_data": row["meta_data"] if "meta_data" in row.keys() else "{}",
+            "parent_id": parent_id,
+            "meta_data": meta_str,
             "x": row["x"] if "x" in row.keys() else None,
             "y": row["y"] if "y" in row.keys() else None,
             "fx": row["fx"] if "fx" in row.keys() else None,
@@ -696,7 +1019,8 @@ def create_snapshot(description: str, coherence_score: float) -> str:
     # 3. Create deterministic snapshot hash
     state_content = f"{parent_hash or ''}-{coherence_score}-{time.time()}-"
     for n in sorted(nodes_rows, key=lambda x: x["id"]):
-        state_content += f"{n['id']}:{n['mean_activation']:.4f}-"
+        act = float(n["mean_activation"]) if n["mean_activation"] is not None else 0.0
+        state_content += f"{n['id']}:{act:.4f}-"
     commit_hash = hashlib.sha256(state_content.encode('utf-8')).hexdigest()[:16]
     
     # 4. Insert into lgnn_commits
@@ -820,3 +1144,56 @@ def get_snapshot_history() -> List[Dict[str, Any]]:
         })
     conn.close()
     return commits
+
+def save_synthesis(synth_id: str, source_a: str, source_b: str, resonance: float, title: str, content: str, vault_path: str = "", is_crystallized: int = 0):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO lgnn_syntheses (id, source_a, source_b, resonance, title, content, vault_path, is_crystallized, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET
+        resonance = excluded.resonance,
+        title = excluded.title,
+        content = excluded.content,
+        vault_path = excluded.vault_path,
+        is_crystallized = excluded.is_crystallized
+    """, (synth_id, source_a, source_b, resonance, title, content, vault_path, is_crystallized))
+    conn.commit()
+    conn.close()
+
+def get_syntheses(limit: int = 50) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM lgnn_syntheses ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def get_synthesis_by_id(synth_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM lgnn_syntheses WHERE id = ?", (synth_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_syntheses_for_node(node_id: str) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT * FROM lgnn_syntheses 
+    WHERE source_a = ? OR source_b = ? 
+    ORDER BY resonance DESC
+    """, (node_id, node_id))
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def crystallize_synthesis(synth_id: str) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE lgnn_syntheses SET is_crystallized = 1 WHERE id = ?", (synth_id,))
+    success = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return success

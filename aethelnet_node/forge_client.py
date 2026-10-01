@@ -7,7 +7,6 @@ and gasless governance integration via AethelnetPaymaster on Ethereum Sepolia.
 import os
 import json
 import logging
-from pathlib import Path
 import requests
 from typing import List, Dict, Any, Optional
 from web3 import Web3
@@ -17,16 +16,48 @@ from eth_account.messages import encode_defunct
 
 logger = logging.getLogger("Aethelnet.ForgeClient")
 
-DEFAULT_RPC_URL = "https://ethereum-sepolia.publicnode.com"
-DEFAULT_FORGE_ADDRESS = "0x58A520120BEfCBB1dA7A9546c1f1F98C9e6ef1A5"
+DEFAULT_RPC_URL = os.getenv("AETHELNET_RPC_URL", "https://sepolia.gateway.tenderly.co")
+DEFAULT_FORGE_ADDRESS = "0xe79e0686FE39C1f3252D5404411010b2F36CaA2f"
 DEFAULT_ENTRYPOINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
-DEFAULT_PAYMASTER_ADDRESS = "0x9A48A9613e93D2496C794CC51086Ca1F4b2A298f"
+DEFAULT_PAYMASTER_ADDRESS = "0xEAB2FA9DC49A1d9e6F9882FA0B5eA86Ce8ECD77b"
 DEFAULT_FACTORY_ADDRESS = "0x5bc53145Cd53Ffc0e5697B2031028F7AfDd936d7"
-DEFAULT_BUNDLER_URL = "http://localhost:3000/rpc"
+DEFAULT_BUNDLER_URL = os.getenv("AETHELNET_BUNDLER_URL", "http://127.0.0.1:3000/rpc")
 DEFAULT_CHAIN_ID = 11155111
 
 # Minimal ABIs
 FALLBACK_FORGE_ABI = [
+    {
+        "inputs": [{"internalType": "bytes32", "name": "caseId", "type": "bytes32"}],
+        "name": "getCaseNotarization",
+        "outputs": [
+            {"internalType": "bytes32", "name": "stateRoot", "type": "bytes32"},
+            {"internalType": "uint256", "name": "nodeCount", "type": "uint256"},
+            {"internalType": "uint256", "name": "edgeCount", "type": "uint256"},
+            {"internalType": "uint256", "name": "timestamp", "type": "uint256"},
+            {"internalType": "address", "name": "notary", "type": "address"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "bytes32", "name": "caseId", "type": "bytes32"},
+            {"internalType": "bytes32", "name": "stateRoot", "type": "bytes32"},
+            {"internalType": "uint256", "name": "nodeCount", "type": "uint256"},
+            {"internalType": "uint256", "name": "edgeCount", "type": "uint256"}
+        ],
+        "name": "commitStateRoot",
+        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getNotarizedCases",
+        "outputs": [{"internalType": "bytes32[]", "name": "", "type": "bytes32[]"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
     {
         "inputs": [],
         "name": "getActiveNodes",
@@ -111,16 +142,16 @@ def resolve_wan_ip() -> str:
     2. Fallback to HTTPS ipify.org.
     Raises ValueError if IP is local or cannot be resolved.
     """
-    import stun
     import ipaddress
     wan_ip = None
     try:
+        import stun
         nat_type, external_ip, external_port = stun.get_ip_info(stun_host='stun.l.google.com', stun_port=19302)
         if external_ip:
             wan_ip = external_ip
             logger.info(f"[ForgeClient] STUN Resolution Successful: {wan_ip}")
     except Exception as e:
-        logger.warning(f"[ForgeClient] UDP STUN failed: {e}. Falling back to HTTPS.")
+        logger.warning(f"[ForgeClient] UDP STUN failed/unavailable: {e}. Falling back to HTTPS.")
 
     if not wan_ip:
         try:
@@ -219,19 +250,21 @@ class ForgeClient:
 
         return acc
 
-    def _find_contracts_file(self, rel_path: str) -> Optional[Path]:
+    def _find_contracts_file(self, rel_path: str) -> Optional[str]:
         candidate_bases = []
         if env_dir := os.getenv("AETHELNET_CONTRACTS_DIR"):
-            candidate_bases.append(Path(env_dir))
+            candidate_bases.append(env_dir)
+        # Check adjacent packages/aethelnet-contracts, user home, current dir
+        pkg_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         candidate_bases.extend([
-            Path(__file__).resolve().parents[2] / "aethelnet-contracts",
-            Path.home() / "aethelnet-contracts",
-            Path.cwd() / "contracts",
-            Path.cwd()
+            os.path.join(pkg_dir, "aethelnet-contracts"),
+            os.path.join(os.path.expanduser("~"), "aethelnet-contracts"),
+            os.path.join(os.getcwd(), "contracts"),
+            os.getcwd()
         ])
         for base in candidate_bases:
-            candidate = base / rel_path
-            if candidate.is_file():
+            candidate = os.path.join(base, rel_path)
+            if os.path.isfile(candidate):
                 return candidate
         return None
 
@@ -244,7 +277,7 @@ class ForgeClient:
             return env_addr
             
         manifest_path = self._find_contracts_file("deployed_addresses.json")
-        if manifest_path:
+        if manifest_path and os.path.exists(manifest_path):
             try:
                 with open(manifest_path, "r") as f:
                     manifest = json.load(f)
@@ -256,12 +289,14 @@ class ForgeClient:
         return DEFAULT_FORGE_ADDRESS
 
     def _resolve_abi(self) -> list:
-        artifact_path = self._find_contracts_file("artifacts/contracts/TheForge.sol/TheForge.json")
-        if artifact_path:
+        artifact_path = self._find_contracts_file(os.path.join("artifacts", "contracts", "TheForge.sol", "TheForge.json"))
+        if artifact_path and os.path.exists(artifact_path):
             try:
                 with open(artifact_path, "r") as f:
                     data = json.load(f)
-                    return data.get("abi", FALLBACK_FORGE_ABI)
+                    abi = data.get("abi", [])
+                    if any(item.get("name") == "getCaseNotarization" for item in abi):
+                        return abi
             except Exception as e:
                 logger.warning(f"[ForgeClient] Failed reading TheForge artifact: {e}")
         return FALLBACK_FORGE_ABI
@@ -271,6 +306,182 @@ class ForgeClient:
             return self.w3.is_connected()
         except Exception:
             return False
+
+    def commit_state_root(
+        self,
+        case_id: str,
+        state_root: str,
+        node_count: int,
+        edge_count: int,
+        use_paymaster: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Notarizes an evidentiary multigraph state root on-chain to TheForge.
+        Guarantees immutable forensic provenance for investigations.
+        """
+        if not self.is_connected():
+            raise ConnectionError(f"RPC {self.rpc_url} unreachable")
+        if not self.contract:
+            raise ValueError("TheForge contract not loaded")
+        if not self.account:
+            raise ValueError("No node identity account available")
+
+        # Convert strings to bytes32 if needed
+        case_bytes32 = Web3.keccak(text=case_id) if not case_id.startswith("0x") or len(case_id) != 66 else bytes.fromhex(case_id[2:])
+        root_bytes32 = bytes.fromhex(state_root[2:]) if state_root.startswith("0x") and len(state_root) == 66 else Web3.keccak(text=state_root)
+
+        if use_paymaster:
+            return self._commit_state_root_gasless(case_bytes32, root_bytes32, node_count, edge_count, case_id)
+        else:
+            return self._commit_state_root_direct(case_bytes32, root_bytes32, node_count, edge_count, case_id)
+
+    def _commit_state_root_gasless(
+        self,
+        case_bytes32: bytes,
+        root_bytes32: bytes,
+        node_count: int,
+        edge_count: int,
+        case_id: str
+    ) -> Dict[str, Any]:
+        owner_addr = Web3.to_checksum_address(self.account.address)
+        sender_address = self.factory.functions.getAddress(owner_addr, 0).call()
+        logger.info(f"[ForgeClient] Gasless commitStateRoot for case '{case_id}' (Sender: {sender_address})...")
+
+        code = self.w3.eth.get_code(sender_address)
+        if len(code) == 0:
+            create_calldata = self.factory.encode_abi("createAccount", args=[owner_addr, 0])
+            init_code = self.factory_address + create_calldata[2:]
+        else:
+            init_code = "0x"
+
+        nonce = self.entry_point.functions.getNonce(sender_address, 0).call()
+
+        inner_calldata = self.contract.encode_abi(
+            "commitStateRoot",
+            args=[case_bytes32, root_bytes32, node_count, edge_count]
+        )
+        execute_calldata = self.simple_account_interface.encode_abi(
+            "execute",
+            args=[Web3.to_checksum_address(self.contract_address), 0, bytes.fromhex(inner_calldata[2:])]
+        )
+
+        account_gas_limits = "0x" + f"{(500000 << 128) | 500000:064x}"
+        pre_verification_gas = "0x186a0"
+        gas_fees = "0x" + f"{(10**9 << 128) | (2 * 10**9):064x}"
+        paymaster_and_data = self.paymaster_address + f"{500000:032x}" + f"{50000:032x}"
+
+        inner = encode(
+            ["address", "uint256", "bytes32", "bytes32", "bytes32", "uint256", "bytes32", "bytes32"],
+            [
+                Web3.to_checksum_address(sender_address),
+                nonce,
+                Web3.keccak(hexstr=init_code),
+                Web3.keccak(hexstr=execute_calldata),
+                bytes.fromhex(account_gas_limits[2:]),
+                100000,
+                bytes.fromhex(gas_fees[2:]),
+                Web3.keccak(hexstr=paymaster_and_data)
+            ]
+        )
+        inner_hash = Web3.keccak(inner)
+        outer = encode(
+            ["bytes32", "address", "uint256"],
+            [inner_hash, Web3.to_checksum_address(self.entry_point_address), self.chain_id]
+        )
+        user_op_hash = Web3.keccak(outer)
+        msg = encode_defunct(primitive=user_op_hash)
+        sig = self.account.sign_message(msg).signature.hex()
+
+        user_op = {
+            "sender": sender_address,
+            "nonce": hex(nonce),
+            "initCode": init_code,
+            "callData": execute_calldata,
+            "accountGasLimits": account_gas_limits,
+            "preVerificationGas": pre_verification_gas,
+            "gasFees": gas_fees,
+            "paymasterAndData": paymaster_and_data,
+            "signature": "0x" + sig
+        }
+
+        logger.info(f"[ForgeClient] Dispatching commitStateRoot UserOp to Bundler ({self.bundler_url})...")
+        res = requests.post(self.bundler_url, json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_sendUserOperation",
+            "params": [user_op, self.entry_point_address]
+        }, timeout=60)
+
+        res_data = res.json()
+        if "error" in res_data:
+            error_msg = res_data["error"].get("message", str(res_data["error"]))
+            raise RuntimeError(f"Bundler rejected UserOp: {error_msg}")
+
+        tx_hash = res_data["result"]
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        success = (receipt.status == 1)
+
+        return {
+            "success": success,
+            "tx_hash": tx_hash,
+            "block_number": receipt.blockNumber,
+            "case_id": case_id,
+            "state_root": "0x" + root_bytes32.hex(),
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "gasless": True
+        }
+
+    def _commit_state_root_direct(
+        self,
+        case_bytes32: bytes,
+        root_bytes32: bytes,
+        node_count: int,
+        edge_count: int,
+        case_id: str
+    ) -> Dict[str, Any]:
+        nonce = self.w3.eth.get_transaction_count(self.account.address)
+        gas_price = self.w3.eth.gas_price
+        tx = self.contract.functions.commitStateRoot(
+            case_bytes32, root_bytes32, node_count, edge_count
+        ).build_transaction({
+            "from": self.account.address,
+            "nonce": nonce,
+            "gas": 300000,
+            "gasPrice": gas_price
+        })
+        signed_tx = self.account.sign_transaction(tx)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        return {
+            "success": receipt.status == 1,
+            "tx_hash": tx_hash.hex(),
+            "block_number": receipt.blockNumber,
+            "case_id": case_id,
+            "state_root": "0x" + root_bytes32.hex(),
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "gasless": False
+        }
+
+    def get_case_notarization(self, case_id: str) -> Dict[str, Any]:
+        if not self.is_connected() or not self.contract:
+            return {"is_notarized": False, "error": "RPC or contract unavailable"}
+        try:
+            case_bytes32 = Web3.keccak(text=case_id) if not case_id.startswith("0x") or len(case_id) != 66 else bytes.fromhex(case_id[2:])
+            root, nodes, edges, timestamp, notary = self.contract.functions.getCaseNotarization(case_bytes32).call()
+            return {
+                "case_id": case_id,
+                "state_root": "0x" + root.hex() if isinstance(root, bytes) else str(root),
+                "node_count": nodes,
+                "edge_count": edges,
+                "timestamp": timestamp,
+                "notary": notary,
+                "is_notarized": timestamp > 0
+            }
+        except Exception as e:
+            logger.error(f"[ForgeClient] Error reading getCaseNotarization({case_id}): {e}")
+            return {"is_notarized": False, "error": str(e)}
 
     def register_node(self, ip_address: str, use_paymaster: bool = True) -> Dict[str, Any]:
         """
@@ -301,6 +512,25 @@ class ForgeClient:
         # 1. Derive sender address via factory
         sender_address = self.factory.functions.getAddress(owner_addr, 0).call()
         logger.info(f"[ForgeClient] Smart Account Sender: {sender_address}")
+
+        # Check if already registered and within cooldown
+        if self.contract:
+            try:
+                reg_ip, last_seen, is_active = self.contract.functions.peerRegistry(sender_address).call()
+                import time
+                age = int(time.time()) - last_seen
+                if is_active and reg_ip == ip_address and age < 1800:
+                    logger.info(f"[ForgeClient] Node '{ip_address}' already active in TheForge (age {age}s < 1800s cooldown). Skipping UserOp.")
+                    return {
+                        "success": True,
+                        "rate_limited": True,
+                        "message": f"Already active on-chain ({age}s ago)",
+                        "ip_address": ip_address,
+                        "sender": sender_address,
+                        "gasless": True
+                    }
+            except Exception as e:
+                logger.debug(f"[ForgeClient] peerRegistry check skipped: {e}")
 
         # 2. Check if deployed
         code = self.w3.eth.get_code(sender_address)
@@ -376,13 +606,15 @@ class ForgeClient:
         res_data = res.json()
         if "error" in res_data:
             error_msg = res_data["error"].get("message", str(res_data["error"]))
-            if "rate limited" in error_msg:
-                logger.warning(f"[ForgeClient] Node heartbeat throttled by Paymaster cooldown (30 min): {error_msg}")
+            if any(k in error_msg.lower() for k in ["rate limit", "cooldown", "throttled", "revert"]):
+                logger.warning(f"[ForgeClient] Node heartbeat throttled or reverted by Paymaster cooldown: {error_msg}")
                 return {
-                    "success": False,
+                    "success": True,
                     "rate_limited": True,
                     "message": error_msg,
-                    "ip_address": ip_address
+                    "ip_address": ip_address,
+                    "sender": sender_address,
+                    "gasless": True
                 }
             raise RuntimeError(f"Bundler rejected UserOp: {error_msg}")
 

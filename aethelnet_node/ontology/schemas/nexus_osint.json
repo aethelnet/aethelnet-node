@@ -1,0 +1,124 @@
+{
+  "app_id": "nexus_osint",
+  "name": "Nexus OSINT (Financial Forensics)",
+  "version": "1.0.0",
+  "domain": "financial_whistleblower",
+  "description": "Forensic Shell Company, Transaction Graph, and Whistleblower Evidence Network.",
+  "icon": "shield-search",
+  "default_view": "graph",
+  "entities": {
+    "person": {
+      "type_id": "person",
+      "name": "Person of Interest (PEP)",
+      "description": "Politically Exposed Person, Oligarch, Strohmann oder Whistleblower",
+      "color": "#FFFFFF",
+      "icon": "user",
+      "required_properties": ["name"],
+      "optional_properties": ["citizenship", "sanction_status", "aliases"]
+    },
+    "corporation": {
+      "type_id": "corporation",
+      "name": "Holding / Shell Company",
+      "description": "Briefkastenfirma, Offshore-Stiftung oder Mutterkonzern",
+      "color": "#AAAAAA",
+      "icon": "briefcase",
+      "required_properties": ["name"],
+      "optional_properties": ["jurisdiction", "registration_number", "incorporation_date"]
+    },
+    "bank_account": {
+      "type_id": "bank_account",
+      "name": "Bank Account / IBAN",
+      "description": "Korrespondenzbank-Konto, Treuhandkonto oder Dark-Pool Deposit",
+      "color": "#D89F3C",
+      "icon": "credit-card",
+      "required_properties": ["account_identifier"],
+      "optional_properties": ["bank_name", "swift_bic", "jurisdiction"]
+    },
+    "crypto_wallet": {
+      "type_id": "crypto_wallet",
+      "name": "On-Chain / Crypto Wallet",
+      "description": "Ethereum, Solana oder Hyperliquid L1 Adresse",
+      "color": "#00FF41",
+      "icon": "key",
+      "required_properties": ["address"],
+      "optional_properties": ["chain", "known_label", "first_seen"]
+    },
+    "document": {
+      "type_id": "document",
+      "name": "Evidence / Leak Document",
+      "description": "Panama Papers, Überweisungsträger, Whistleblower Drop",
+      "color": "#555555",
+      "icon": "file",
+      "required_properties": ["title", "hash"],
+      "optional_properties": ["leak_source", "date", "classification"]
+    }
+  },
+  "relations": {
+    "owns": {
+      "type_id": "owns",
+      "name": "Beneficial Owner Of",
+      "description": "Wirtschaftlich Berechtigter laut Register oder Treuhandvertrag",
+      "color": "#FFFFFF",
+      "is_directional": true,
+      "allowed_source_types": ["person"],
+      "allowed_target_types": ["corporation"],
+      "is_conflict_candidate": false
+    },
+    "controls": {
+      "type_id": "controls",
+      "name": "De Facto / Shadow Control",
+      "description": "Faktische Beherrschung ohne formelle Inhaberschaft",
+      "color": "#FF3333",
+      "is_directional": true,
+      "allowed_source_types": ["person"],
+      "allowed_target_types": ["corporation", "bank_account"],
+      "is_conflict_candidate": true
+    },
+    "transferred_funds": {
+      "type_id": "transferred_funds",
+      "name": "Transferred Funds To",
+      "description": "Finanztransaktion oder Krypto-Transfer",
+      "color": "#D89F3C",
+      "is_directional": true,
+      "allowed_source_types": ["corporation", "bank_account", "crypto_wallet"],
+      "allowed_target_types": ["corporation", "bank_account", "crypto_wallet"],
+      "is_conflict_candidate": false
+    },
+    "laundered_through": {
+      "type_id": "laundered_through",
+      "name": "Laundered Through",
+      "description": "Verschleierungstransaktion über Zwischenstationen",
+      "color": "#FF3333",
+      "is_directional": true,
+      "allowed_source_types": ["bank_account", "crypto_wallet"],
+      "allowed_target_types": ["corporation", "bank_account"],
+      "is_conflict_candidate": true
+    },
+    "denies_relation": {
+      "type_id": "denies_relation",
+      "name": "Formally Denies Relation",
+      "description": "Öffentliche Dementis oder notarielle Gegenerklärung",
+      "color": "#0066FF",
+      "is_directional": true,
+      "allowed_source_types": ["person"],
+      "allowed_target_types": ["corporation"],
+      "is_conflict_candidate": true
+    }
+  },
+  "conflict_rules": [
+    {
+      "rule_id": "control_vs_denial",
+      "name": "Verschleierte Strohmann-Beziehung",
+      "conflicting_relations": ["controls", "denies_relation"],
+      "severity": "critical",
+      "description": "Widerspruch: Akteur bestreitet Verbindung zur Offshore-Struktur, während geleakte Überweisungsbelege faktische Kontrolle beweisen."
+    },
+    {
+      "rule_id": "ownership_vs_denial",
+      "name": "Eigentum trotz Dementi",
+      "conflicting_relations": ["owns", "denies_relation"],
+      "severity": "critical",
+      "description": "Widerspruch: Akteur bestreitet Beziehung zur Offshore-Struktur, besitzt diese aber laut Dokumenten."
+    }
+  ]
+}

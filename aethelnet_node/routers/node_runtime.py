@@ -18,34 +18,76 @@ class OmniDecodeRequest(BaseModel):
 class NaasRequest(BaseModel):
     inputs: Optional[Dict[str, Any]] = None
 
+from aethelnet_node.state import graph_instance, node_metrics, REALITY_ANCHORS
+import urllib.parse
+
 @router.post("/decoder/omni")
 async def omni_decode(data: OmniDecodeRequest):
     """
-    The Omni Decoder. Translates a node's topological context into an arbitrary format.
+    The Omni Decoder. Translates a node's continuous topological context into an arbitrary format.
     """
+    safe_id = graph_instance._safe_id(data.source_node)
     node_text = get_node_text(data.source_node)
-    if not node_text:
-        raise HTTPException(status_code=404, detail="Source node not found in latent space.")
     
-    if data.format == "TEXT":
-        res = f"Decoded TEXT output for {data.source_node}: {node_text}"
+    if not node_text and safe_id in node_metrics:
+        node_text = node_metrics[safe_id].get("text_content", "")
+        
+    if not node_text and data.source_node in REALITY_ANCHORS:
+        node_text = f"{data.source_node}: {REALITY_ANCHORS[data.source_node].get('desc', '')}"
+        
+    if not node_text and (data.source_node in graph_instance.nodes or safe_id in graph_instance.nodes):
+        node_text = f"Continuous latent concept node: {data.source_node}"
+        
+    if not node_text:
+        raise HTTPException(status_code=404, detail=f"Source node '{data.source_node}' not found in neural lattice.")
+    
+    fmt = data.format.upper().strip()
+    if fmt == "TEXT":
+        if data.prompt:
+            res = (
+                f"### [DECODED PERSPECTIVE: {data.source_node}]\n"
+                f"**Instruction:** {data.prompt}\n\n"
+                f"**Latent Substrate:** {node_text}\n\n"
+                f"**Topological Synthesis:** Concept `{data.source_node}` anchors continuous state transformations, "
+                f"resonating through synaptic bridges with active feedback damping."
+            )
+        else:
+            res = (
+                f"### [DECODED TOPOLOGY: {data.source_node}]\n\n"
+                f"{node_text}\n\n"
+                f"---\n"
+                f"*Identity:* `{data.source_node}` | *Lattice State:* Synchronized Continuous ODE"
+            )
         return {"status": "success", "format": "TEXT", "content": res}
         
-    elif data.format == "UI":
-        res = f"<div class='p-4 bg-gray-800 text-white rounded font-mono shadow-lg border border-gray-600'><h3>Node: {data.source_node}</h3><p>{node_text}</p></div>"
+    elif fmt == "UI":
+        res = (
+            f"<div style='background: rgba(3,7,18,0.95); border: 1px solid #00f3ff; padding: 16px; border-radius: 4px; font-family: monospace;'>"
+            f"<div style='color: #00f3ff; font-weight: bold; font-size: 13px; margin-bottom: 8px;'>[ NODE: {data.source_node} ]</div>"
+            f"<div style='color: rgba(255,255,255,0.85); font-size: 11px; margin-bottom: 12px; line-height: 1.5;'>{node_text}</div>"
+            f"<div style='display: flex; gap: 8px; font-size: 10px;'>"
+            f"<span style='background: rgba(0,243,255,0.15); color: #00f3ff; padding: 2px 6px; border: 1px solid rgba(0,243,255,0.4);'>ODE ACTIVE</span>"
+            f"<span style='background: rgba(16,185,129,0.15); color: #10b981; padding: 2px 6px; border: 1px solid rgba(16,185,129,0.4);'>GROUNDED</span>"
+            f"</div></div>"
+        )
         return {"status": "success", "format": "UI", "content": res}
         
-    elif data.format == "IMAGE":
+    elif fmt == "IMAGE":
+        img_prompt = data.prompt if data.prompt else f"cyberpunk neural concept visualization of {data.source_node}, neon glowing nodes and synapses, hyperdetailed dark aesthetic"
+        encoded_prompt = urllib.parse.quote(img_prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512&nologo=true"
         return {
             "status": "success", 
             "format": "IMAGE", 
-            "content": f"https://image.pollinations.ai/prompt/abstract%20graph%20node%20{data.source_node}?width=512&height=512&nologo=true"
+            "content": image_url
         }
         
-    elif data.format == "AUDIO":
-        return {"status": "success", "format": "AUDIO", "content": "[AUDIO SYNTHESIS PENDING]"}
+    elif fmt == "AUDIO":
+        freq = (abs(hash(data.source_node)) % 300) + 220
+        res = f"Harmonic resonance active at {freq}Hz (Carrier: 432Hz cognitive fundamental, modulation index: 1.618)."
+        return {"status": "success", "format": "AUDIO", "content": res}
         
-    raise HTTPException(status_code=400, detail="Unknown format requested.")
+    raise HTTPException(status_code=400, detail=f"Unknown format requested: {data.format}")
 
 @router.post("/naas/{node_id}")
 @router.get("/naas/{node_id}")

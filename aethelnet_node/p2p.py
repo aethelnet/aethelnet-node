@@ -20,10 +20,11 @@ from aethelnet_node.forge_client import forge_client
 
 def get_known_peers() -> List[str]:
     """
-    Dynamically fetches active peers strictly from TheForge.sol on-chain registry.
-    Eliminates all static mocks and fallbacks.
+    Dynamically discovers active peers from environment seed config (AETHELNET_PEERS)
+    and TheForge.sol on-chain smart contract registry.
     """
-    return forge_client.get_active_nodes()
+    from aethelnet_node.state import get_known_peers as _get_peers
+    return _get_peers()
 
 class PeerSyncPayload(BaseModel):
     peer_id: str

@@ -1,44 +1,80 @@
-# The Aethelburg Ecosystem: Observer Guide
+# The Aethelburg Ecosystem: Operational & Investigation Guide
 
-Welcome to the Aethelburg Ecosystem. This guide covers how to interact with your local **Monadic Core** (the Aethelnet Node) using the **Observer** web interface.
+Welcome to the **Aethelburg Cognitive Ecosystem**. This guide explains how to operate, query, and investigate using the **Aethelnet Node** (`packages/aethelnet-node`) and the **Aethelnet Observer** (`apps/aethelnet-observer`).
 
-## 1. The Monadic Architecture
+---
 
-Your Aethelnet setup consists of two entirely decoupled layers:
-*   **The Monadic Core (`aethelnet-node`)**: The offline-first Python backend running the LGNN (Liquid Graph Neural Network) and ODE topological evolution.
-*   **The Observer (`aethelnet-observer`)**: The Vue/Vite-based 3D HUD that visualizes the manifold in real-time.
+## 1. System Topology & Dual Interaction Modes
 
-By design, the Core has no windows. It requires the Observer to give you visual access to the topological data.
+The ecosystem operates across two decoupled surfaces:
+1. **The Daemon Core (`aethelnet-node`)**:
+   Runs headless on `server-141` (`https://aethelburg.network:8000`), executing continuous ODE state updates, SQLite WAL multigraph transactions, epistemic weighting, and on-chain notarization.
+2. **The Observer Workspace (`apps/aethelnet-observer`)**:
+   A Daylight Brutalism styled single-page application built on Vue 3, Vite, and D3/Three.js, providing interactive graph navigation, conflict analysis, and command orchestration.
 
-## 2. Navigating the Manifold
+---
+
+## 2. Navigating the Evidentiary Multigraph
+
+### 2.1 Case Selection & Schema Inspector
+Investigations are partitioned by `app_id` (e.g. `project_echo`, `supply_chain_provenance`). In the top navigation:
+* Select an active case from the dropdown.
+* The header displays real-time metrics: active nodes, total edges, contested claims, and the Merkle SHA-256 state root.
+
+### 2.2 Conflict & Dissonance Resolution Panel
+When contradictory claims are detected (e.g., competing assertions regarding provenance or ownership):
+1. Open the **Conflicts Panel** (`Ctrl+Shift+C` or click the balance scales icon).
+2. Review the differential weight:
+   $$\Delta W = |W_{\text{claim}_1} - W_{\text{claim}_2}|$$
+3. If $\Delta W \ge 0.15$, the dispute is marked **Decisive Resolution** (`DEADLOCK_RESOLVED_DECISIVE`).
+4. If $\Delta W < 0.04$, an **Epistemic Deadlock** is flagged (`DEADLOCK_TRIGGERED`), allowing human investigators to inspect source documents or provide supplementary evidence.
+
+### 2.3 Entity Resolution & Disjoint-Set Deduplication
+Historical archives frequently fragment identical entities across alternate spellings, inventory numbers, and titles:
+1. Click **Scan Duplicates** to run the disjoint-set fuzzy clustering engine.
+2. Review suggested alias pairs (e.g., `Hauptmann von Puttkamer` $\to$ `Jesko von Puttkamer`).
+3. Click **Consolidate Entities** to execute atomic graph re-wiring: all incident edges are redirected to the canonical primary entity, and orphaned alias nodes are pruned.
+
+---
+
+## 3. The 3D Manifold & Monadic Diving
 
 ### Subgraph Dive-In (`[ DIVE ]`)
-The graph is not flat. It is hierarchical and deeply nested. 
-When viewing a complex Node (like a Macro or a Folder), you can press the **`[ DIVE ]`** button in the Node Inspector panel. 
-This action instructs the backend to filter the topology down to just the children of that specific `parent_id`. You are now inside a sub-monad.
+The graph is hierarchical. Complex entities (such as organizations, expeditions, or archival batches) contain child concepts:
+* Click any clustered node in the 3D canvas and press **`[ DIVE ]`** in the Inspector panel.
+* The viewport smoothly filters down to the sub-topology of that specific parent entity.
+* Press **Root** or **Esc** to return to the global manifold.
 
-To return to the global view, simply hit the **Root** or **Back** button in the top navigation bar.
+---
 
-## 3. The Command Palette (`Cmd+K` / `Ctrl+K`)
+## 4. The Observer Command Palette (`Cmd+K` / `Ctrl+K`)
 
-The Observer HUD includes a global Command Palette that directly triggers System Apps inside the Monadic Core.
+The global Command Palette directly triggers backend operations on the node:
 
 ### `/spider <url>`
 **Autonomous Knowledge Ingestion.**
-Typing `/spider https://example.com` dispatches a Web Spider node. The backend will autonomously crawl the URL, extract headings, metadata, and links, and instantly plant them into the graph topology around a central spider node.
+Crawls the specified target URL, extracts semantic entities and predicates, matches them against institutional authority tiers, and commits them to the active multigraph.
 
-### `/exec <node_id>`
-**Macro Execution.**
-Typing `/exec Macro_123` triggers a complex research or execution chain. The backend will parse the inputs of the given Node, run any predefined automated logic (e.g., querying external literature or evaluating algorithms), and generate output nodes dynamically.
+### `/ingest <text>`
+**Direct Dossier Ingestion.**
+Sends raw text or Markdown to the zero-shot extraction pipeline. Automatically generates deterministic SHA-256 claim hashes and evaluates epistemic weights.
 
-### `/naas <node_id>`
-**Node-as-a-Service Execution.**
-If you have created a Script Node (Python/Lua), typing `/naas <node_id>` commands the Core to execute the code inside its secure sandbox. The console output and results will instantly materialize as child nodes in the graph.
+### `/notarize`
+**On-Chain Merkle Root Notarization.**
+Computes the canonical state root across all active nodes and edges, then submits an ERC-4337 gasless transaction to `TheForge.sol` via `AethelnetPaymaster.sol`.
 
-## 4. The Time Machine (Reality Forks)
-At the bottom of the Observer UI, the Timeline HUD allows you to scrub through the history of the graph's evolution. Dragging the slider back in time will issue a `fork_reality` command to the WebSocket, instructing the backend to prune any nodes that did not exist at that specific timestamp. 
-
-*Warning: Forking reality permanently branches the ODE timeline. Use with caution.*
+### `/dedup`
+**Run Disjoint-Set Entity Scan.**
+Probes the active case for alias variants and presents consolidation proposals.
 
 ---
+
+## 5. Timeline HUD & Time-Travel Debugging
+
+At the bottom of the Observer UI, the Timeline HUD tracks graph evolution across time:
+* Scrub backward through timestamps to inspect graph topology prior to specific document ingestions.
+* Useful for auditing when an epistemic contradiction first entered the system and which document introduced the discrepancy.
+
+---
+
 *“A monad has no windows through which anything could come in or go out. But in its reflection, it contains the universe.”*
