@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out aethelnet-node
+        uses: actions/checkout@v4
+        with:
+          path: aethelnet-node
+
+      # pytest.ini puts ../aethelnet-core on the path, so check it out next to the node
+      - name: Check out aethelnet-core
+        uses: actions/checkout@v4
+        with:
+          repository: aethelnet/aethelnet-core
+          path: aethelnet-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: aethelnet-node/requirements-dev.txt
+
+      - name: Install dependencies (CPU-only torch)
+        working-directory: aethelnet-node
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        working-directory: aethelnet-node
+        run: pytest -q

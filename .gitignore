@@ -23,6 +23,9 @@ scratch/
 *.sqlite3
 *.db
 .env
+*.egg-info/
+build/
+dist/
 .idea/
 .vscode/
 .DS_Store
