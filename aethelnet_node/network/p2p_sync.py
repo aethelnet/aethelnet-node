@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import logging
+import os
 import socket
 from typing import List, Dict, Any
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Response
@@ -11,13 +12,12 @@ logger = logging.getLogger("LGNN.P2P")
 
 p2p_router = APIRouter(prefix="/p2p", tags=["p2p"])
 
-# Known peer registry (IPs or hostnames)
+# Known peer registry (IPs or hostnames), configured per deployment so that no
+# real addresses live in the repository.
 # In a real mesh network, this could be discovered via UDP multicast (mDNS/Zeroconf)
-KNOWN_PEERS = [
-    "172.20.10.10:8000",  # Desktop (Sovereign Academy)
-    "130.61.202.29:8000", # Cloud Execution Node (Sniper)
-    "YOUR_NODE_IP_1:8000" # UNIT734 (Clean LGNN Main)
-]
+def known_peers() -> List[str]:
+    """Bootstrap peers from AETHELNET_PEERS, e.g. "peer1.example.org:8000,10.0.0.5:8000"."""
+    return [p.strip() for p in os.getenv("AETHELNET_PEERS", "").split(",") if p.strip()]
 
 class PeerSyncPayload(BaseModel):
     peer_id: str
@@ -164,7 +164,7 @@ async def hunt_for_peers():
     
     while True:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for peer in KNOWN_PEERS:
+            for peer in known_peers():
                 # 🚀 Use the new Binary Protocol Endpoint!
                 peer_url = f"http://{peer}/p2p/expertise/binary"
                 try:
@@ -251,7 +251,7 @@ async def gossip_truth_to_peers():
             }
             
             async with httpx.AsyncClient(timeout=5.0) as client:
-                for peer in KNOWN_PEERS:
+                for peer in known_peers():
                     peer_url = f"http://{peer}/api/lgnn/universal_ingest"
                     try:
                         resp = await client.post(peer_url, json=payload)
