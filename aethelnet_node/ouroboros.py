@@ -5,6 +5,8 @@ import logging
 import json
 import numpy as np
 
+from aethelnet_node.security import auth_headers
+
 logger = logging.getLogger("LGNN.Ouroboros")
 
 class OuroborosLoop:
@@ -180,7 +182,7 @@ class OuroborosLoop:
             }
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    await client.post(self.lgnn_ingest_url, json=payload)
+                    await client.post(self.lgnn_ingest_url, json=payload, headers=auth_headers())
                     return True
             except Exception as e2:
                 logger.error(f"[Ouroboros] HTTP fallback also failed: {e2}")
