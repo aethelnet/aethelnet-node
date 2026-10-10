@@ -22,6 +22,7 @@ from aethelnet_node.state import (
     REALITY_ANCHORS, DEFAULT_CONFIDENCE, KNOWLEDGE_CONFIDENCE,
     active_websockets
 )
+from aethelnet_node.security import auth_headers
 
 logger = logging.getLogger("Aethelnet.Node.Graph")
 
@@ -132,7 +133,11 @@ async def universal_ingest(payload: UniversalIngest, background_tasks: Backgroun
     if uplink_url and os.environ.get("IS_CLOUD_NODE") != "1":
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                await client.post(f"{uplink_url.rstrip('/')}/api/lgnn/universal_ingest", json=payload.dict())
+                await client.post(
+                    f"{uplink_url.rstrip('/')}/api/lgnn/universal_ingest",
+                    json=payload.dict(),
+                    headers=auth_headers(os.environ.get("AETHELNET_UPLINK_TOKEN", ""))
+                )
         except Exception:
             pass
 

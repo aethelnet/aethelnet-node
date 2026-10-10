@@ -2,17 +2,20 @@
 import sys
 import json
 import urllib.request
+import os
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
 mcp = FastMCP("LGNN_Universal_Bridge")
 
-API_URL = "http://127.0.0.1:8000/api/lgnn"
+API_URL = os.getenv("AETHELNET_API_URL", "http://127.0.0.1:8000/api/lgnn")
+_TOKEN = os.getenv("AETHELNET_AUTH_TOKEN", "").strip()
+AUTH_HEADERS = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
 
 def proxy_call(name, kwargs):
     url = f"{API_URL}/mcp/tools/call"
     payload = json.dumps({"name": name, "arguments": kwargs}).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", **AUTH_HEADERS}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as res:
             data = json.loads(res.read().decode('utf-8'))

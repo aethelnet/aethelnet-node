@@ -13,6 +13,7 @@ from aethelnet_node.state import (
     REALITY_ANCHORS, DEFAULT_CONFIDENCE, KNOWLEDGE_CONFIDENCE, DOCUMENT_CONFIDENCE
 )
 from aethelnet_node.daemons import start_all_daemons
+from aethelnet_node.security import token_auth_middleware, get_cors_origins, log_security_posture
 
 # Re-exports for backward compatibility with existing tests & legacy modules
 __all__ = [
@@ -53,11 +54,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Setup
+# Token authentication for state-changing requests (see aethelnet_node/security.py)
+app.middleware("http")(token_auth_middleware)
+log_security_posture()
+
+# CORS Setup (AETHELNET_CORS_ORIGINS, comma-separated; defaults to all origins without credentials)
+_cors_origins = get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

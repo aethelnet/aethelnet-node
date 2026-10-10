@@ -17,6 +17,8 @@ from aethelnet_node.state import (
     DOCUMENT_CONFIDENCE, broadcast_resonance
 )
 
+from aethelnet_node.security import is_within_directory
+
 logger = logging.getLogger("Aethelnet.Node.Vault")
 router = APIRouter()
 
@@ -300,9 +302,16 @@ async def save_vault_note(payload: VaultNoteSaveRequest):
     if not vault_root:
         raise HTTPException(status_code=404, detail="Obsidian Vault directory not found")
 
+    # Note ids become file names: reject separators and parent references so a
+    # request cannot write outside the vault (e.g. id="../../.bashrc").
+    if not payload.id or payload.id in (".", "..") or any(sep in payload.id for sep in ("/", "\\", "\x00")):
+        raise HTTPException(status_code=400, detail="Invalid note id.")
+
     target_file = None
     if payload.vault_path:
         candidate = os.path.join(vault_root, payload.vault_path)
+        if not is_within_directory(vault_root, candidate):
+            raise HTTPException(status_code=400, detail="vault_path must point inside the vault.")
         if os.path.isfile(candidate):
             target_file = candidate
 
@@ -319,6 +328,9 @@ async def save_vault_note(payload: VaultNoteSaveRequest):
     if not target_file:
         # Default to saving in 03_MEMORY_BANK or root
         target_file = os.path.join(vault_root, "03_MEMORY_BANK", f"{payload.id}.md")
+
+    if not is_within_directory(vault_root, target_file):
+        raise HTTPException(status_code=400, detail="Refusing to write outside the vault.")
 
     # Write file to disk
     os.makedirs(os.path.dirname(target_file), exist_ok=True)
