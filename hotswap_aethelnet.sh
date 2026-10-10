@@ -1,34 +1,33 @@
 #!/bin/bash
 
 # Configuration
-SERVER_92="ubuntu@127.0.0.1"
-SERVER_141="ubuntu@YOUR_NODE_IP_1"
-REMOTE_DIR="~/aethelnet-node"
+# Deploy targets are configured locally, not in the repo, e.g. in .env:
+#   AETHELNET_DEPLOY_HOSTS="ubuntu@node-a.example.org ubuntu@node-b.example.org"
+if [ -f .env ]; then
+    set -a; . ./.env; set +a
+fi
+if [ -z "$AETHELNET_DEPLOY_HOSTS" ]; then
+    echo "❌ Set AETHELNET_DEPLOY_HOSTS (space-separated user@host list), e.g. in .env"
+    exit 1
+fi
+REMOTE_DIR="${AETHELNET_REMOTE_DIR:-~/aethelnet-node}"
 
-echo "[1/4] Preparing Aethelnet Node Updates..."
+echo "[1/3] Preparing Aethelnet Node Updates..."
 if [ ! -f "./aethelnet_node/main.py" ]; then
     echo "❌ Local main.py not found!"
     exit 1
 fi
 
-echo "[2/4] Uploading fresh Socket & P2P Logic to .92 Server..."
-scp ./aethelnet_node/main.py $SERVER_92:$REMOTE_DIR/aethelnet_node/main.py
-if [ $? -eq 0 ]; then
-    echo "✅ Upload to .92 successful."
-    echo "Restarting service on .92..."
-    ssh $SERVER_92 "sudo systemctl restart aethelnet || pm2 restart aethelnet_node"
-else
-    echo "❌ Failed to upload to .92"
-fi
+echo "[2/3] Uploading fresh Socket & P2P Logic..."
+for SERVER in $AETHELNET_DEPLOY_HOSTS; do
+    scp ./aethelnet_node/main.py $SERVER:$REMOTE_DIR/aethelnet_node/main.py
+    if [ $? -eq 0 ]; then
+        echo "✅ Upload to $SERVER successful."
+        echo "Restarting service on $SERVER..."
+        ssh $SERVER "sudo systemctl restart aethelnet || pm2 restart aethelnet_node"
+    else
+        echo "❌ Failed to upload to $SERVER"
+    fi
+done
 
-echo "[3/4] Uploading fresh Socket & P2P Logic to .141 Server..."
-scp ./aethelnet_node/main.py $SERVER_141:$REMOTE_DIR/aethelnet_node/main.py
-if [ $? -eq 0 ]; then
-    echo "✅ Upload to .141 successful."
-    echo "Restarting service on .141..."
-    ssh $SERVER_141 "sudo systemctl restart aethelnet || pm2 restart aethelnet_node"
-else
-    echo "❌ Failed to upload to .141"
-fi
-
-echo "[4/4] 🚀 Global Swarm Resonance engaged. Servers .92 and .141 are now syncing their thought-vectors to GCP!"
+echo "[3/3] 🚀 Global Swarm Resonance engaged. All configured servers are now syncing their thought-vectors!"
