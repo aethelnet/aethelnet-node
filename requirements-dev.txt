@@ -1,0 +1,19 @@
+# Minimal set to run the test suite (CI uses this).
+# sentence-transformers and web3 are intentionally left out: the node falls back to
+# deterministic SHA-256 embeddings and skips on-chain calls, which keeps tests fast
+# and offline.
+fastapi>=0.90.0
+uvicorn>=0.20.0
+httpx>=0.23.0
+pydantic>=1.10.0
+python-multipart>=0.0.6
+requests>=2.28.0
+msgpack>=1.0.0
+python-dotenv>=1.0.0
+torchdiffeq>=0.2.3
+networkx>=3.0
+numpy>=1.22.0
+scipy>=1.8.0
+pyyaml>=6.0
+beautifulsoup4>=4.11.0
+pytest>=7.0
