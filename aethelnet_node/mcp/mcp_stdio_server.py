@@ -3,8 +3,11 @@ import sys
 import json
 import urllib.request
 import traceback
+import os
 
-API_URL = "http://127.0.0.1:8000/api/lgnn"
+API_URL = os.getenv("AETHELNET_API_URL", "http://127.0.0.1:8000/api/lgnn")
+_TOKEN = os.getenv("AETHELNET_AUTH_TOKEN", "").strip()
+AUTH_HEADERS = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
 
 def send_response(id, result=None, error=None):
     response = {"jsonrpc": "2.0", "id": id}
@@ -44,7 +47,7 @@ def handle_request(req):
             args = params.get("arguments", {})
             payload = json.dumps({"name": name, "arguments": args}).encode("utf-8")
             
-            r = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+            r = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", **AUTH_HEADERS}, method="POST")
             with urllib.request.urlopen(r, timeout=60) as res:
                 data = json.loads(res.read().decode('utf-8'))
                 # Backend returns {"content": [...], "isError": bool}
