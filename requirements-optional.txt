@@ -1,0 +1,27 @@
+# Optional features. The node starts without these and disables the feature
+# (or falls back) when an import fails.
+
+# PostgreSQL backend (DB_PROVIDER=postgresql, DATABASE_URL=...)
+psycopg2-binary>=2.9
+
+# NaaS Lua engine (only used with AETHELNET_ALLOW_CODE_EXEC=1)
+lupa>=2.0
+
+# Sensors: images, audio, documents, system vitals
+Pillow>=10.0
+librosa>=0.10
+tinytag>=1.10
+psutil>=5.9
+unstructured>=0.10
+
+# WAN routing / STUN for node registration
+pystun3>=1.1
+
+# MCP bridge (mcp/mcp_universal_server.py)
+mcp>=1.0
+
+# Diffusion decoder
+diffusers>=0.25
+
+# Websocket client utilities
+websockets>=12.0
