@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from aethelnet_node.database import get_node_text
+from aethelnet_node.security import is_code_exec_enabled
 
 logger = logging.getLogger("Aethelnet.Node.Runtime")
 
@@ -133,6 +134,14 @@ async def naas_endpoint(node_id: str, request: Request, req_data: Optional[NaasR
         is_prompt = True
 
     # 3. Execution logic
+    # Running node text as code is remote code execution for anyone who can write a node
+    # (API, vault sync, P2P gossip). Keep it off unless the operator explicitly opts in.
+    if (is_lua or is_python) and not is_code_exec_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Code execution is disabled on this node. Set AETHELNET_ALLOW_CODE_EXEC=1 on a trusted, private node to enable it."
+        )
+
     if is_lua:
         try:
             from lupa import LuaRuntime
@@ -153,13 +162,13 @@ async def naas_endpoint(node_id: str, request: Request, req_data: Optional[NaasR
         try:
             local_vars = {"inputs": inputs, "result": None}
             import io
-            import sys
-            old_stdout = sys.stdout
-            redirected_output = sys.stdout = io.StringIO()
-            
-            exec(content, {}, local_vars)
-            
-            sys.stdout = old_stdout
+            from contextlib import redirect_stdout
+            redirected_output = io.StringIO()
+
+            # redirect_stdout restores sys.stdout even when the snippet raises
+            with redirect_stdout(redirected_output):
+                exec(content, {}, local_vars)
+
             stdout_val = redirected_output.getvalue()
             
             res_val = local_vars.get("result")
