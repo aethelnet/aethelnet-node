@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import secrets
 import time
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -11,10 +12,27 @@ from aethelnet_node.state import (
     graph_instance, node_metrics, text_to_embedding,
     calculate_centrality, active_websockets
 )
+from aethelnet_node.security import is_ws_operator, ws_query_token
 
 logger = logging.getLogger("Aethelnet.Node.Telemetry")
 
 router = APIRouter()
+
+# Messages that change the graph or node settings. They need an authorised session:
+# the operator token (sent as {"type": "AUTH", "token": ...} or ?token=...), or a direct
+# localhost connection when no token is configured. The telemetry stream itself stays
+# readable, like GET requests over HTTP.
+MUTATING_MESSAGES = {
+    "update_params", "tune_resonance", "create_link",
+    "delete_nodes", "fork_reality", "toggle_privacy",
+}
+
+
+def _remove_viewport_node(stream_id: str):
+    if graph_instance.get_node_embedding(stream_id) is not None:
+        graph_instance.remove_node(stream_id)
+    node_metrics.pop(stream_id, None)
+
 
 @router.websocket("/ws")
 @router.websocket("/ws/stream")
@@ -24,7 +42,13 @@ router = APIRouter()
 async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = None):
     await websocket.accept()
     active_websockets.add(websocket)
-    stream_id = client_id or f"Stream_{int(time.time())}"
+    authorized = is_ws_operator(websocket, ws_query_token(websocket))
+    stream_id = client_id or f"Stream_{int(time.time())}_{secrets.token_hex(3)}"
+    # A viewport must never take over an existing graph node: add_node would overwrite
+    # its embedding and the disconnect cleanup would remove it.
+    if graph_instance.get_node_embedding(stream_id) is not None and \
+            node_metrics.get(stream_id, {}).get("source_tag") != "websocket_observer":
+        stream_id = f"Stream_{stream_id}_{secrets.token_hex(3)}"
     logger.info(f"[WS] Client connected. Registering as {stream_id}")
     
     emb = text_to_embedding(stream_id)
@@ -45,8 +69,18 @@ async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = No
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
                 msg_type = data.get("type")
                 if msg_type == "AUTH":
-                    # Acknowledge authentication handshake
-                    await websocket.send_json({"type": "AUTH_OK", "client_id": stream_id})
+                    authorized = authorized or is_ws_operator(websocket, str(data.get("token") or ""))
+                    if authorized:
+                        await websocket.send_json({"type": "AUTH_OK", "client_id": stream_id})
+                    else:
+                        await websocket.send_json({"type": "AUTH_FAILED", "client_id": stream_id,
+                                                   "detail": "Invalid or missing token."})
+                elif msg_type in MUTATING_MESSAGES and not authorized:
+                    logger.warning(f"[WS] Rejected unauthorised '{msg_type}' from {stream_id}")
+                    await websocket.send_json({
+                        "type": "ERROR",
+                        "detail": f"'{msg_type}' requires authentication: send {{\"type\": \"AUTH\", \"token\": ...}} first."
+                    })
                 elif msg_type == "update_params":
                     if "decay_rate" in data:
                         graph_instance.decay_rate = float(data["decay_rate"])
@@ -172,12 +206,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = No
                 }
             })
     except WebSocketDisconnect:
-        active_websockets.discard(websocket)
         logger.info(f"[WS] Client {stream_id} disconnected.")
-        if stream_id in graph_instance.nodes:
-            graph_instance.remove_node(stream_id)
-            if stream_id in node_metrics:
-                del node_metrics[stream_id]
     except Exception as e:
-        active_websockets.discard(websocket)
         logger.debug(f"[WS Error]: {e}")
+    finally:
+        # graph_instance.nodes is keyed by hashed ids, so the old `stream_id in graph_instance.nodes`
+        # check never matched and every connection left its viewport node behind.
+        active_websockets.discard(websocket)
+        _remove_viewport_node(stream_id)
