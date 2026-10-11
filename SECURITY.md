@@ -9,8 +9,11 @@ You'll get an answer within a few days. Once a fix is released, we're happy to c
 
 ## Running a node safely
 
-- Always set `AETHELNET_AUTH_TOKEN` on nodes reachable from the network. Without it, write requests
-  are only accepted from localhost.
+- Give every agent its own token: `python -m aethelnet_node.agents add <agent-id>` (the token is shown once;
+  only its hash is stored in `agents.json`). Writes are then attributed to that agent (`created_by` /
+  `updated_by`, audit log), and a leaked token can be rotated or revoked without touching the others.
+- Always set `AETHELNET_AUTH_TOKEN` or register agents on nodes reachable from the network. Without either,
+  write requests are only accepted from localhost.
 - The same token protects WebSocket commands (`delete_nodes`, `fork_reality`, `create_link`, ...).
   Clients send `{"type": "AUTH", "token": "..."}` after connecting (or connect with `?token=...`);
   the read-only telemetry stream stays open.

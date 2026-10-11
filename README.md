@@ -145,6 +145,26 @@ python3 -m uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8000 --reload
 
 Swagger API documentation is available at `http://localhost:8000/docs`.
 
+### Agent Identities (one token per agent)
+
+Every agent (Gemini, Claude, an MCP client, a human script) gets its own token. Writes are attributed to the
+agent that made them (`created_by` / `updated_by` on nodes, edges and claims, plus an audit log), which is the
+basis for provenance and reputation.
+
+```bash
+python -m aethelnet_node.agents add gemini --description "Gemini in the maintainer's editor"   # prints the token once
+python -m aethelnet_node.agents list
+python -m aethelnet_node.agents rotate gemini    # new token, old one stops working
+python -m aethelnet_node.agents revoke gemini
+```
+
+Only SHA-256 hashes are stored, in `agents.json` next to the database (git-ignored; `AETHELNET_AGENTS_FILE`
+overrides the location). Agents send `Authorization: Bearer <token>`; MCP bridges use `AETHELNET_AUTH_TOKEN`
+from their environment, so each agent's MCP config gets its own token.
+`GET /api/agents/whoami` shows which agent a token belongs to; `GET /api/agents` lists agents with the number of
+nodes and claims they created and how many of their claims are contested. The legacy `AETHELNET_AUTH_TOKEN`
+still works and is attributed to `operator`.
+
 ### Production Daemon (Systemd on `server-141`)
 
 The production node runs as a hardened systemd daemon on Oracle Cloud (`server-141`):
