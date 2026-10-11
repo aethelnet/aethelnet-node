@@ -18,6 +18,8 @@ coverage.xml
 *.log
 .pytest_cache/
 lgnn.db
+agents.json
+agents.json.tmp
 scratch/
 .visited_*.json
 *.sqlite3

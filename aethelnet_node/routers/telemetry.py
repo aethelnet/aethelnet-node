@@ -12,7 +12,8 @@ from aethelnet_node.state import (
     graph_instance, node_metrics, text_to_embedding,
     calculate_centrality, active_websockets
 )
-from aethelnet_node.security import is_ws_operator, ws_query_token
+from aethelnet_node.agents import current_agent
+from aethelnet_node.security import record_agent_write, ws_agent, ws_query_token
 
 logger = logging.getLogger("Aethelnet.Node.Telemetry")
 
@@ -42,7 +43,10 @@ def _remove_viewport_node(stream_id: str):
 async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = None):
     await websocket.accept()
     active_websockets.add(websocket)
-    authorized = is_ws_operator(websocket, ws_query_token(websocket))
+    # Agent this session acts for (None = read-only). Writes during the session are attributed to it.
+    session_agent = ws_agent(websocket, ws_query_token(websocket))
+    if session_agent:
+        current_agent.set(session_agent)
     stream_id = client_id or f"Stream_{int(time.time())}_{secrets.token_hex(3)}"
     # A viewport must never take over an existing graph node: add_node would overwrite
     # its embedding and the disconnect cleanup would remove it.
@@ -69,13 +73,16 @@ async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = No
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=2.0)
                 msg_type = data.get("type")
                 if msg_type == "AUTH":
-                    authorized = authorized or is_ws_operator(websocket, str(data.get("token") or ""))
-                    if authorized:
-                        await websocket.send_json({"type": "AUTH_OK", "client_id": stream_id})
+                    if not session_agent:
+                        session_agent = ws_agent(websocket, str(data.get("token") or ""))
+                        if session_agent:
+                            current_agent.set(session_agent)
+                    if session_agent:
+                        await websocket.send_json({"type": "AUTH_OK", "client_id": stream_id, "agent_id": session_agent})
                     else:
                         await websocket.send_json({"type": "AUTH_FAILED", "client_id": stream_id,
                                                    "detail": "Invalid or missing token."})
-                elif msg_type in MUTATING_MESSAGES and not authorized:
+                elif msg_type in MUTATING_MESSAGES and not session_agent:
                     logger.warning(f"[WS] Rejected unauthorised '{msg_type}' from {stream_id}")
                     await websocket.send_json({
                         "type": "ERROR",
@@ -157,6 +164,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: Optional[str] = No
                             cursor.execute("UPDATE lgnn_nodes SET is_public = ? WHERE id = ?", (1 if new_state else 0, safe_id))
                             conn.commit()
                             conn.close()
+
+                if msg_type in MUTATING_MESSAGES and session_agent:
+                    record_agent_write(session_agent, "WS", msg_type, 200)
             except asyncio.TimeoutError:
                 pass
 
