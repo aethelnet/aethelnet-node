@@ -9,13 +9,10 @@ import logging
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from web3 import Web3
-from eth_account import Account
 
 logger = logging.getLogger("Aethelnet.Bundler")
 
 DEFAULT_RPC_URL = os.getenv("AETHELNET_RPC_URL", "https://sepolia.gateway.tenderly.co")
-DEFAULT_BUNDLER_KEY = os.getenv("AETHELNET_BUNDLER_KEY", "d35bcb391904a95ef74a366654964d63ab09675ae7b82036d0f3ff28a0a69b1c")
 ENTRY_POINT_ADDRESS = os.getenv("AETHELNET_ENTRYPOINT_ADDRESS", "0x0000000071727De22E5E9d8BAf0edAc6f37da032")
 SEPOLIA_CHAIN_ID = 11155111
 
@@ -49,18 +46,37 @@ ENTRY_POINT_ABI = [
 
 app = FastAPI(title="Aethelnet ERC-4337 Bundler", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The bundler pays gas from AETHELNET_BUNDLER_KEY's wallet, so arbitrary websites must not be able to
+# call it from a visitor's browser. Allow dashboard origins explicitly, comma-separated.
+_cors_origins = [o.strip() for o in os.getenv("AETHELNET_BUNDLER_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+
+class BundlerKeyMissing(RuntimeError):
+    pass
+
+
+def get_bundler_key() -> str:
+    """The relayer key comes only from the environment (.env); there is deliberately no fallback."""
+    key = os.getenv("AETHELNET_BUNDLER_KEY", "").strip()
+    if not key:
+        raise BundlerKeyMissing("AETHELNET_BUNDLER_KEY is not set. Put it in .env (see .env.example); never hard-code it.")
+    return key
+
 
 def get_web3_and_account():
+    key = get_bundler_key()  # fail with a clear message before touching web3
+    from web3 import Web3
+    from eth_account import Account
     rpc = os.getenv("AETHELNET_RPC_URL", DEFAULT_RPC_URL)
     w3 = Web3(Web3.HTTPProvider(rpc))
-    acc = Account.from_key(DEFAULT_BUNDLER_KEY)
+    acc = Account.from_key(key)
     entry_point = w3.eth.contract(address=Web3.to_checksum_address(ENTRY_POINT_ADDRESS), abi=ENTRY_POINT_ABI)
     return w3, acc, entry_point
 
@@ -105,7 +121,12 @@ async def handle_rpc(request: Request):
             user_op = params[0]
             logger.info(f"[Bundler] Processing UserOp for sender {user_op.get('sender')}")
 
-            w3, acc, entry_point = get_web3_and_account()
+            try:
+                w3, acc, entry_point = get_web3_and_account()
+            except BundlerKeyMissing as key_err:
+                logger.error(f"[Bundler] {key_err}")
+                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": str(key_err)}}
+            from web3 import Web3
 
             formatted_op = (
                 Web3.to_checksum_address(user_op["sender"]),
@@ -174,8 +195,13 @@ async def handle_rpc(request: Request):
 def main():
     import uvicorn
     port = int(os.getenv("PORT", "3000"))
-    host = os.getenv("HOST", "0.0.0.0")
+    # Localhost by default: anyone who can reach this port can spend the relayer wallet's gas.
+    host = os.getenv("AETHELNET_BUNDLER_HOST", "127.0.0.1")
     logging.basicConfig(level=logging.INFO)
+    try:
+        get_bundler_key()
+    except BundlerKeyMissing as key_err:
+        raise SystemExit(str(key_err))
     logger.info(f"Starting Aethelnet ERC-4337 Micro-Bundler on {host}:{port}...")
     uvicorn.run(app, host=host, port=port)
 
