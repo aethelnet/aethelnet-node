@@ -2,6 +2,7 @@
 Aethelnet Node security helpers.
 
 - Token authentication for state-changing HTTP requests (AETHELNET_AUTH_TOKEN).
+- The same rules for WebSocket sessions (operator and peer sockets).
 - Opt-in switch for executing node content as code (AETHELNET_ALLOW_CODE_EXEC).
 - Configurable CORS origins (AETHELNET_CORS_ORIGINS).
 - Path containment checks for file writes.
@@ -12,8 +13,9 @@ import secrets
 import logging
 from typing import Dict, List, Optional
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse
+from starlette.requests import HTTPConnection
 
 logger = logging.getLogger("Aethelnet.Security")
 
@@ -60,16 +62,42 @@ def extract_request_token(request: Request) -> str:
     return request.headers.get("x-aethelnet-token", "").strip()
 
 
-def is_direct_loopback(request: Request) -> bool:
+def token_matches(provided: str, expected: str) -> bool:
+    """Constant-time comparison that also copes with non-ASCII input (str compare_digest raises on it)."""
+    if not provided or not expected:
+        return False
+    return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def is_direct_loopback(conn: HTTPConnection) -> bool:
     """
-    True only for requests that originate on this machine without passing a proxy.
+    True only for requests/sockets that originate on this machine without passing a proxy.
     Behind nginx/Caddy every request comes from 127.0.0.1, so forwarded requests
     never count as local.
     """
-    if request.headers.get("x-forwarded-for") or request.headers.get("forwarded"):
+    if conn.headers.get("x-forwarded-for") or conn.headers.get("forwarded"):
         return False
-    host = request.client.host if request.client else ""
+    host = conn.client.host if conn.client else ""
     return host in LOOPBACK_HOSTS
+
+
+def ws_query_token(websocket: WebSocket) -> str:
+    """Browsers cannot set headers on WebSockets, so a token may also come as ?token=..."""
+    return websocket.query_params.get("token", "").strip()
+
+
+def is_ws_operator(websocket: WebSocket, provided: str = "") -> bool:
+    """Same rule as HTTP writes: the operator token if one is set, otherwise direct localhost only."""
+    token = get_auth_token()
+    if token:
+        return token_matches(provided, token)
+    return is_direct_loopback(websocket)
+
+
+def is_ws_peer(websocket: WebSocket, provided: str = "") -> bool:
+    """Peer sockets are open unless AETHELNET_PEER_TOKEN is set (same rule as /p2p/* over HTTP)."""
+    peer_token = get_peer_token()
+    return token_matches(provided, peer_token) if peer_token else True
 
 
 def requires_operator_auth(method: str, path: str) -> bool:
@@ -89,14 +117,14 @@ async def token_auth_middleware(request: Request, call_next):
     if path.startswith(PEER_PATH_PREFIXES):
         peer_token = get_peer_token()
         if peer_token and request.method.upper() not in SAFE_METHODS:
-            if not secrets.compare_digest(provided, peer_token):
+            if not token_matches(provided, peer_token):
                 return _unauthorized("Invalid or missing peer token.")
         return await call_next(request)
 
     if requires_operator_auth(request.method, path):
         token = get_auth_token()
         if token:
-            if not secrets.compare_digest(provided, token):
+            if not token_matches(provided, token):
                 return _unauthorized("Invalid or missing token. Send 'Authorization: Bearer <AETHELNET_AUTH_TOKEN>'.")
         elif not is_direct_loopback(request):
             return _unauthorized("Remote write access is disabled. Set AETHELNET_AUTH_TOKEN on the node to enable it.")

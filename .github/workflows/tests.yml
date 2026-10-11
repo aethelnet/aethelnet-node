@@ -8,6 +8,8 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    # WebSocket tests block on receive; a regression should fail fast, not hang for the 6 h default
+    timeout-minutes: 20
     steps:
       - name: Check out aethelnet-node
         uses: actions/checkout@v4
