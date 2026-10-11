@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import HTTPConnection
 
 from aethelnet_node.agents import (
-    LOCAL_AGENT, current_agent, has_registered_agents, load_agents, resolve_token
+    LOCAL_AGENT, clean_task_id, current_agent, current_task, has_registered_agents, load_agents, resolve_token
 )
 
 logger = logging.getLogger("Aethelnet.Security")
@@ -151,12 +151,15 @@ async def token_auth_middleware(request: Request, call_next):
     else:
         return _unauthorized("Remote write access is disabled. Set AETHELNET_AUTH_TOKEN or register agents on the node.")
 
-    # Database writes made while handling this request are attributed to agent_id (created_by / updated_by)
+    # Database writes made while handling this request are attributed to agent_id (created_by / updated_by),
+    # and nodes touched within one task (X-Aethelnet-Task, or the agent's session) count as used together.
     request.state.agent_id = agent_id
     ctx = current_agent.set(agent_id)
+    task_ctx = current_task.set(clean_task_id(request.headers.get("x-aethelnet-task", "")))
     try:
         response = await call_next(request)
     finally:
+        current_task.reset(task_ctx)
         current_agent.reset(ctx)
     record_agent_write(agent_id, request.method.upper(), path, response.status_code)
     return response
