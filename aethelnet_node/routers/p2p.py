@@ -14,6 +14,7 @@ from aethelnet_node.state import (
     get_known_peers, REALITY_ANCHORS, DEFAULT_CONFIDENCE,
     active_p2p_sockets
 )
+from aethelnet_node.security import is_ws_peer, ws_query_token
 
 logger = logging.getLogger("Aethelnet.Node.P2P")
 
@@ -169,15 +170,24 @@ async def p2p_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_p2p_sockets.add(websocket)
     peer_ip = websocket.client.host if websocket.client else "unknown"
+    # Open unless AETHELNET_PEER_TOKEN is set; then peers send it as ?token=... or {"type": "AUTH", "token": ...}
+    authorized = is_ws_peer(websocket, ws_query_token(websocket))
     logger.info(f"[P2P] Warp Synapse established with peer {peer_ip}")
     try:
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
-            if payload.get("type") == "resonance_wave":
+            if payload.get("type") == "AUTH":
+                authorized = authorized or is_ws_peer(websocket, str(payload.get("token") or ""))
+                await websocket.send_json({"type": "AUTH_OK" if authorized else "AUTH_FAILED"})
+            elif payload.get("type") == "resonance_wave":
+                if not authorized:
+                    await websocket.send_json({"type": "ERROR", "detail": "Peer token required."})
+                    continue
                 nid = payload.get("node")
                 text = payload.get("text", "")
-                if nid and nid not in graph_instance.nodes and text:
+                # graph_instance.nodes is keyed by hashed ids; look the node up by its original id
+                if nid and graph_instance.get_node_embedding(nid) is None and text:
                     emb = text_to_embedding(text)
                     graph_instance.add_node(nid, emb)
                     save_node(nid, emb, 0.0, DEFAULT_CONFIDENCE, 0.0, False, False, text_content=text, source_tag="warp_synapse")
