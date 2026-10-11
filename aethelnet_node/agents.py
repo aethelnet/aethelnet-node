@@ -42,6 +42,10 @@ AGENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 # Which agent the current request / WebSocket message acts for. The HTTP middleware sets it;
 # database writes read it to fill created_by / updated_by.
 current_agent: contextvars.ContextVar[str] = contextvars.ContextVar("aethelnet_current_agent", default=SYSTEM_AGENT)
+# Optional shared task id (header X-Aethelnet-Task, e.g. an issue number). Nodes touched within one task
+# become "used together" (see coaccess.py); several agents may share a task id.
+current_task: contextvars.ContextVar[str] = contextvars.ContextVar("aethelnet_current_task", default="")
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:#/-]{1,128}$")
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,11 @@ def resolve_token(provided: str) -> Optional[AgentIdentity]:
 
 def get_current_agent() -> str:
     return current_agent.get()
+
+
+def clean_task_id(raw: str) -> str:
+    raw = (raw or "").strip()
+    return raw if TASK_ID_PATTERN.match(raw) else ""
 
 
 # ---------------------------------------------------------------------------

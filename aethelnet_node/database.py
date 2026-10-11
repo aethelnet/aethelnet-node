@@ -12,7 +12,16 @@ except ImportError:
 DB_PROVIDER = os.getenv("DB_PROVIDER", "sqlite").lower()
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-from aethelnet_node.agents import get_current_agent
+from aethelnet_node.agents import SYSTEM_AGENT, get_current_agent
+
+
+def _touch(node_ids):
+    """Feed agent writes into the "used together" memory (coaccess.py); daemon writes are skipped."""
+    if get_current_agent() == SYSTEM_AGENT:
+        return
+    from aethelnet_node.coaccess import touch
+    touch(node_ids, kind="write")
+
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
 
@@ -292,6 +301,43 @@ def init_db():
     """)
     conn.commit()
 
+    # "Used together" memory for associative recall (coaccess.py): which nodes agents touched per task,
+    # which pairs were already linked in a task, and the resulting weighted edges
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_touch_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        kind TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_coaccess_seen (
+        task_id TEXT NOT NULL,
+        node_a TEXT NOT NULL,
+        node_b TEXT NOT NULL,
+        PRIMARY KEY (task_id, node_a, node_b)
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_coaccess_edges (
+        node_a TEXT NOT NULL,
+        node_b TEXT NOT NULL,
+        weight REAL DEFAULT 0,
+        last_agent TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (node_a, node_b)
+    )
+    """)
+    conn.commit()
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_touch_task ON agent_touch_log(task_id);")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Create Kanban Columns Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kanban_columns (
@@ -465,6 +511,7 @@ def save_node(
     ))
     conn.commit()
     conn.close()
+    _touch([node_id])
 
 def delete_node(node_id: str):
     conn = get_db_connection()
@@ -566,6 +613,7 @@ def save_edge(source: str, target: str, weight: float, label: Optional[str] = No
     """, (u, v, weight, agent, agent))
     conn.commit()
     conn.close()
+    _touch([u, v])
 
 def delete_edge(source: str, target: str):
     u, v = sorted([source, target])
@@ -616,6 +664,7 @@ def save_multigraph_edge(
           is_contested, conflict_notes, agent, agent))
     conn.commit()
     conn.close()
+    _touch([source, target])
 
 def get_multigraph_edges(
     app_id: Optional[str] = None,
