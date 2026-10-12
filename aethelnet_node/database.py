@@ -23,7 +23,12 @@ def _touch(node_ids):
     touch(node_ids, kind="write")
 
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
+DB_PATH = os.getenv("AETHELNET_DB_PATH", DEFAULT_DB_PATH)
+
+
+def get_db_path() -> str:
+    return os.getenv("AETHELNET_DB_PATH") or DB_PATH
 
 class PostgresCursorWrapper:
     def __init__(self, cursor):
@@ -92,7 +97,7 @@ def get_db_connection():
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
         return PostgresConnectionWrapper(conn)
     else:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn = sqlite3.connect(get_db_path(), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=30000;")
         return conn

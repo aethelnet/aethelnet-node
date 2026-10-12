@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from aethelnet_node import agents
+from aethelnet_node import agents, database
 from aethelnet_node.database import get_db_connection, init_db
 from aethelnet_node.main import app
 
@@ -89,16 +89,25 @@ class TestAgentProvenance(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
         path = os.path.join(cls.tmp, "agents.json")
+        cls.test_db = os.path.join(cls.tmp, "test_agents.db")
+        cls.orig_db_path = database.DB_PATH
+        cls.env = patch.dict(os.environ, {
+            "AETHELNET_AGENTS_FILE": path,
+            "AETHELNET_DB_PATH": cls.test_db,
+            "AETHELNET_AUTH_TOKEN": "",
+            "AETHELNET_PEER_TOKEN": "",
+        })
+        cls.env.start()
+        database.DB_PATH = cls.test_db
+        database.init_db()
         cls.gemini = agents.add_agent("gemini", path=path)
         cls.claude = agents.add_agent("claude", path=path)
-        cls.env = patch.dict(os.environ, {"AETHELNET_AGENTS_FILE": path, "AETHELNET_AUTH_TOKEN": "",
-                                          "AETHELNET_PEER_TOKEN": ""})
-        cls.env.start()
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
         cls.env.stop()
+        database.DB_PATH = cls.orig_db_path
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def _auth(self, token):
@@ -163,14 +172,22 @@ class TestLocalDevelopment(unittest.TestCase):
     def test_localhost_without_auth_writes_as_local(self):
         tmp = tempfile.mkdtemp()
         try:
-            with patch.dict(os.environ, {"AETHELNET_AGENTS_FILE": os.path.join(tmp, "none.json"),
-                                         "AETHELNET_AUTH_TOKEN": ""}):
+            test_db = os.path.join(tmp, "test_local.db")
+            orig_db_path = database.DB_PATH
+            database.DB_PATH = test_db
+            with patch.dict(os.environ, {
+                "AETHELNET_AGENTS_FILE": os.path.join(tmp, "none.json"),
+                "AETHELNET_DB_PATH": test_db,
+                "AETHELNET_AUTH_TOKEN": "",
+            }):
+                database.init_db()
                 client = TestClient(app)
                 self.assertEqual(client.get("/api/agents/whoami").json()["writes_attributed_to"], "local")
                 res = client.post("/api/lgnn/node", json={"id": "Prov_Local", "text_content": "x"})
                 self.assertEqual(res.status_code, 200)
-            self.assertEqual(_provenance("lgnn_nodes", "id", "Prov_Local"), ("local", "local"))
+                self.assertEqual(_provenance("lgnn_nodes", "id", "Prov_Local"), ("local", "local"))
         finally:
+            database.DB_PATH = orig_db_path
             shutil.rmtree(tmp, ignore_errors=True)
 
 
