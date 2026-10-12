@@ -12,7 +12,23 @@ except ImportError:
 DB_PROVIDER = os.getenv("DB_PROVIDER", "sqlite").lower()
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
+from aethelnet_node.agents import SYSTEM_AGENT, get_current_agent
+
+
+def _touch(node_ids):
+    """Feed agent writes into the "used together" memory (coaccess.py); daemon writes are skipped."""
+    if get_current_agent() == SYSTEM_AGENT:
+        return
+    from aethelnet_node.coaccess import touch
+    touch(node_ids, kind="write")
+
+
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lgnn.db")
+DB_PATH = os.getenv("AETHELNET_DB_PATH", DEFAULT_DB_PATH)
+
+
+def get_db_path() -> str:
+    return os.getenv("AETHELNET_DB_PATH") or DB_PATH
 
 class PostgresCursorWrapper:
     def __init__(self, cursor):
@@ -81,7 +97,7 @@ def get_db_connection():
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
         return PostgresConnectionWrapper(conn)
     else:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn = sqlite3.connect(get_db_path(), timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=30000;")
         return conn
@@ -261,7 +277,72 @@ def init_db():
         conn.commit()
     except Exception:
         conn.rollback()
-    
+
+    # Agent provenance: which agent created / last changed a node, edge or claim (see agents.py).
+    # One ALTER per try so an already existing column doesn't skip the others.
+    for table in ("lgnn_nodes", "lgnn_edges", "lgnn_multigraph_edges"):
+        for column in ("created_by", "updated_by"):
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT DEFAULT ''")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_multi_edges_created_by ON lgnn_multigraph_edges(created_by);")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # Audit trail of every authorised write (HTTP and WebSocket commands)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_write_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        method TEXT,
+        path TEXT,
+        status_code INTEGER,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
+
+    # "Used together" memory for associative recall (coaccess.py): which nodes agents touched per task,
+    # which pairs were already linked in a task, and the resulting weighted edges
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_touch_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        kind TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_coaccess_seen (
+        task_id TEXT NOT NULL,
+        node_a TEXT NOT NULL,
+        node_b TEXT NOT NULL,
+        PRIMARY KEY (task_id, node_a, node_b)
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_coaccess_edges (
+        node_a TEXT NOT NULL,
+        node_b TEXT NOT NULL,
+        weight REAL DEFAULT 0,
+        last_agent TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (node_a, node_b)
+    )
+    """)
+    conn.commit()
+    try:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_touch_task ON agent_touch_log(task_id);")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # Create Kanban Columns Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS kanban_columns (
@@ -401,14 +482,16 @@ def save_node(
     conn = get_db_connection()
     cursor = conn.cursor()
     emb_bytes = serialize_tensor(embedding)
+    agent = get_current_agent()
     cursor.execute("""
     INSERT INTO lgnn_nodes (
         id, embedding, text_content, mean_activation, confidence, plateau_factor,
         is_grounded, help_chain, is_archived, source_tag, is_quarantined, node_type,
-        meta_data, app_id, entity_type, label, last_updated
+        meta_data, app_id, entity_type, label, created_by, updated_by, last_updated
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
+        updated_by = excluded.updated_by,
         embedding = excluded.embedding,
         text_content = CASE WHEN excluded.text_content != '' THEN excluded.text_content ELSE lgnn_nodes.text_content END,
         mean_activation = excluded.mean_activation,
@@ -428,10 +511,12 @@ def save_node(
     """, (
         node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor,
         1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0,
-        source_tag, 1 if is_quarantined else 0, node_type, meta_data, app_id, entity_type, label
+        source_tag, 1 if is_quarantined else 0, node_type, meta_data, app_id, entity_type, label,
+        agent, agent
     ))
     conn.commit()
     conn.close()
+    _touch([node_id])
 
 def delete_node(node_id: str):
     conn = get_db_connection()
@@ -523,14 +608,17 @@ def save_edge(source: str, target: str, weight: float, label: Optional[str] = No
     u, v = sorted([source, target])
     conn = get_db_connection()
     cursor = conn.cursor()
+    agent = get_current_agent()
     cursor.execute("""
-    INSERT INTO lgnn_edges (source, target, weight)
-    VALUES (?, ?, ?)
+    INSERT INTO lgnn_edges (source, target, weight, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(source, target) DO UPDATE SET
-        weight = excluded.weight
-    """, (u, v, weight))
+        weight = excluded.weight,
+        updated_by = excluded.updated_by
+    """, (u, v, weight, agent, agent))
     conn.commit()
     conn.close()
+    _touch([u, v])
 
 def delete_edge(source: str, target: str):
     u, v = sorted([source, target])
@@ -558,12 +646,15 @@ def save_multigraph_edge(
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
+    agent = get_current_agent()
     cursor.execute("""
     INSERT INTO lgnn_multigraph_edges (
         edge_id, app_id, source, target, relation_type, weight,
-        timestamp, evidence_quote, source_doc_id, is_contested, conflict_notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        timestamp, evidence_quote, source_doc_id, is_contested, conflict_notes,
+        created_by, updated_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(edge_id) DO UPDATE SET
+        updated_by = excluded.updated_by,
         app_id = excluded.app_id,
         source = excluded.source,
         target = excluded.target,
@@ -574,9 +665,11 @@ def save_multigraph_edge(
         source_doc_id = excluded.source_doc_id,
         is_contested = excluded.is_contested,
         conflict_notes = excluded.conflict_notes
-    """, (edge_id, app_id, source, target, relation_type, weight, timestamp, evidence_quote, source_doc_id, is_contested, conflict_notes))
+    """, (edge_id, app_id, source, target, relation_type, weight, timestamp, evidence_quote, source_doc_id,
+          is_contested, conflict_notes, agent, agent))
     conn.commit()
     conn.close()
+    _touch([source, target])
 
 def get_multigraph_edges(
     app_id: Optional[str] = None,
@@ -955,6 +1048,47 @@ def get_agent_history(agent_id: str) -> List[Dict[str, Any]]:
         })
     conn.close()
     return logs
+
+def log_agent_write(agent_id: str, method: str, path: str, status_code: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO agent_write_log (agent_id, method, path, status_code) VALUES (?, ?, ?, ?)",
+        (agent_id, method, path, int(status_code))
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_agent_stats() -> Dict[str, Dict[str, Any]]:
+    """Per-agent provenance counts: the raw material for reputation (claims made, claims contested)."""
+    stats: Dict[str, Dict[str, Any]] = {}
+
+    def bucket(agent_id: str) -> Dict[str, Any]:
+        return stats.setdefault(agent_id, {"nodes_created": 0, "claims_created": 0,
+                                           "claims_contested": 0, "writes": 0, "last_write": None})
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT created_by, COUNT(*) AS n FROM lgnn_nodes WHERE created_by != '' GROUP BY created_by")
+    for row in cursor.fetchall():
+        bucket(row["created_by"])["nodes_created"] = row["n"]
+    cursor.execute("""
+        SELECT created_by, COUNT(*) AS n, SUM(CASE WHEN is_contested = 1 THEN 1 ELSE 0 END) AS contested
+        FROM lgnn_multigraph_edges WHERE created_by != '' GROUP BY created_by
+    """)
+    for row in cursor.fetchall():
+        b = bucket(row["created_by"])
+        b["claims_created"] = row["n"]
+        b["claims_contested"] = row["contested"] or 0
+    cursor.execute("SELECT agent_id, COUNT(*) AS n, MAX(timestamp) AS last FROM agent_write_log GROUP BY agent_id")
+    for row in cursor.fetchall():
+        b = bucket(row["agent_id"])
+        b["writes"] = row["n"]
+        b["last_write"] = str(row["last"]) if row["last"] is not None else None
+    conn.close()
+    return stats
+
 
 def save_persona(name: str, node_ids: List[str], active: bool):
     conn = get_db_connection()

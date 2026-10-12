@@ -119,6 +119,16 @@ app.include_router(system_apps_router, prefix="/api/lgnn", tags=["System Apps"])
 from aethelnet_node.routers.vault import router as vault_router
 app.include_router(vault_router, prefix="/api/lgnn", tags=["Obsidian Vault"])
 
+# Agent identities: whoami + registered agents with provenance counts
+from aethelnet_node.routers.agents import router as agents_router
+app.include_router(agents_router, prefix="/api", tags=["Agents"])
+
+# Associative recall (first E2E milestone) and the HTTP side of the MCP bridges
+from aethelnet_node.routers.recall import router as recall_router
+from aethelnet_node.routers.mcp import router as mcp_router
+app.include_router(recall_router, prefix="/api/lgnn", tags=["Associative Recall"])
+app.include_router(mcp_router, prefix="/api/lgnn", tags=["MCP"])
+
 @app.get("/", tags=["System Vitals"])
 def health():
     connected = False
