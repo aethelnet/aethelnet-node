@@ -145,6 +145,57 @@ python3 -m uvicorn aethelnet_node.main:app --host 0.0.0.0 --port 8000 --reload
 
 Swagger API documentation is available at `http://localhost:8000/docs`.
 
+### Agent Identities (one token per agent)
+
+Every agent (Gemini, Claude, an MCP client, a human script) gets its own token. Writes are attributed to the
+agent that made them (`created_by` / `updated_by` on nodes, edges and claims, plus an audit log), which is the
+basis for provenance and reputation.
+
+```bash
+python -m aethelnet_node.agents add gemini --description "Gemini in the maintainer's editor"   # prints the token once
+python -m aethelnet_node.agents list
+python -m aethelnet_node.agents rotate gemini    # new token, old one stops working
+python -m aethelnet_node.agents revoke gemini
+```
+
+Only SHA-256 hashes are stored, in `agents.json` next to the database (git-ignored; `AETHELNET_AGENTS_FILE`
+overrides the location). Agents send `Authorization: Bearer <token>`; MCP bridges use `AETHELNET_AUTH_TOKEN`
+from their environment, so each agent's MCP config gets its own token.
+`GET /api/agents/whoami` shows which agent a token belongs to; `GET /api/agents` lists agents with the number of
+nodes and claims they created and how many of their claims are contested. The legacy `AETHELNET_AUTH_TOKEN`
+still works and is attributed to `operator`.
+
+### Associative Recall for Agents (MCP or HTTP)
+
+When an agent is stuck it describes what it is trying to do and gets back the most relevant concepts, the concepts
+agents needed together with them, and the claims attached to each (evidence, author, whether contested).
+
+- **Retrieval:** BM25 over node texts + MiniLM meaning (reciprocal-rank fusion); without `sentence-transformers`
+  only BM25. Archived and quarantined nodes are excluded.
+- **Association:** Personalized PageRank (teleport 0.5) from the top hits over *used together* edges. Nodes become
+  used together when one agent writes or links them, or marks them useful, within the same task:
+  the `X-Aethelnet-Task` header (shared across agents, e.g. an issue number) or, without it, the agent's session
+  (30 min gap). Daemon writes and recall results themselves don't count.
+- Method and evidence: `aethelnet-core/research/recall_benchmark`.
+
+```bash
+# HTTP
+curl -s "http://localhost:8000/api/lgnn/recall?q=how+do+I+reset+the+mixer&k=5" | jq .
+curl -s -X POST http://localhost:8000/api/lgnn/recall/feedback -H "Authorization: Bearer $TOKEN" \
+     -H "X-Aethelnet-Task: issue-42" -d '{"node_ids": ["Mixer_Reset", "Mixer_Firmware"]}'
+```
+
+**MCP:** point your MCP client at the stdio bridge with the agent's own token:
+
+```json
+{"command": "python", "args": ["-m", "aethelnet_node.mcp.mcp_stdio_server"],
+ "env": {"AETHELNET_API_URL": "http://127.0.0.1:8000/api/lgnn", "AETHELNET_AUTH_TOKEN": "<this agent's token>"}}
+```
+
+The bridge talks to `GET /api/lgnn/mcp/tools` and `POST /api/lgnn/mcp/tools/call`. Over HTTP only safe tools are
+exposed: `lgnn_topological_recovery`, `lgnn_mark_useful`, `lgnn_read_node_content`, `lgnn_query_graph`. Shell, local
+file and network tools need a sandbox first.
+
 ### Production Daemon (Systemd on `server-141`)
 
 The production node runs as a hardened systemd daemon on Oracle Cloud (`server-141`):

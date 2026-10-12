@@ -17,6 +17,10 @@ from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse
 from starlette.requests import HTTPConnection
 
+from aethelnet_node.agents import (
+    LOCAL_AGENT, clean_task_id, current_agent, current_task, has_registered_agents, load_agents, resolve_token
+)
+
 logger = logging.getLogger("Aethelnet.Security")
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -86,12 +90,21 @@ def ws_query_token(websocket: WebSocket) -> str:
     return websocket.query_params.get("token", "").strip()
 
 
+def auth_configured() -> bool:
+    """Writes need a token once an operator token or at least one agent identity exists."""
+    return bool(get_auth_token()) or has_registered_agents()
+
+
+def ws_agent(websocket: WebSocket, provided: str = "") -> Optional[str]:
+    """Agent id for a WebSocket session, using the same rule as HTTP writes; None if not authorised."""
+    if auth_configured():
+        identity = resolve_token(provided)
+        return identity.agent_id if identity and identity.can_write else None
+    return LOCAL_AGENT if is_direct_loopback(websocket) else None
+
+
 def is_ws_operator(websocket: WebSocket, provided: str = "") -> bool:
-    """Same rule as HTTP writes: the operator token if one is set, otherwise direct localhost only."""
-    token = get_auth_token()
-    if token:
-        return token_matches(provided, token)
-    return is_direct_loopback(websocket)
+    return ws_agent(websocket, provided) is not None
 
 
 def is_ws_peer(websocket: WebSocket, provided: str = "") -> bool:
@@ -121,23 +134,56 @@ async def token_auth_middleware(request: Request, call_next):
                 return _unauthorized("Invalid or missing peer token.")
         return await call_next(request)
 
-    if requires_operator_auth(request.method, path):
-        token = get_auth_token()
-        if token:
-            if not token_matches(provided, token):
-                return _unauthorized("Invalid or missing token. Send 'Authorization: Bearer <AETHELNET_AUTH_TOKEN>'.")
-        elif not is_direct_loopback(request):
-            return _unauthorized("Remote write access is disabled. Set AETHELNET_AUTH_TOKEN on the node to enable it.")
+    identity = resolve_token(provided) if provided else None
 
-    return await call_next(request)
+    if not requires_operator_auth(request.method, path):
+        request.state.agent_id = identity.agent_id if identity else None
+        return await call_next(request)
+
+    if auth_configured():
+        if identity is None:
+            return _unauthorized("Invalid or missing token. Send 'Authorization: Bearer <agent token>'.")
+        if not identity.can_write:
+            return JSONResponse(status_code=403, content={"detail": f"Agent '{identity.agent_id}' may not write."})
+        agent_id = identity.agent_id
+    elif is_direct_loopback(request):
+        agent_id = LOCAL_AGENT
+    else:
+        return _unauthorized("Remote write access is disabled. Set AETHELNET_AUTH_TOKEN or register agents on the node.")
+
+    # Database writes made while handling this request are attributed to agent_id (created_by / updated_by),
+    # and nodes touched within one task (X-Aethelnet-Task, or the agent's session) count as used together.
+    request.state.agent_id = agent_id
+    ctx = current_agent.set(agent_id)
+    task_ctx = current_task.set(clean_task_id(request.headers.get("x-aethelnet-task", "")))
+    try:
+        response = await call_next(request)
+    finally:
+        current_task.reset(task_ctx)
+        current_agent.reset(ctx)
+    record_agent_write(agent_id, request.method.upper(), path, response.status_code)
+    return response
+
+
+def record_agent_write(agent_id: str, method: str, path: str, status_code: int) -> None:
+    """Append to the audit log. Never lets logging failures break a request."""
+    try:
+        from aethelnet_node.database import log_agent_write
+        log_agent_write(agent_id, method, path, status_code)
+    except Exception as e:  # e.g. DB not initialised yet
+        logger.debug(f"[Security] audit log write failed: {e}")
 
 
 def log_security_posture() -> None:
-    if not get_auth_token():
+    if not auth_configured():
         logger.warning(
-            "[Security] AETHELNET_AUTH_TOKEN is not set: write requests are only accepted "
-            "from localhost. Set a token to allow authenticated remote access."
+            "[Security] No AETHELNET_AUTH_TOKEN and no registered agents: write requests are only "
+            "accepted from localhost. Register agents with `python -m aethelnet_node.agents add <id>`."
         )
+    else:
+        agents = [a for a, e in load_agents().items() if not e.get("revoked")]
+        logger.info(f"[Security] Write access by token. Agents: {', '.join(agents) or '-'}"
+                    f"{' + operator token' if get_auth_token() else ''}")
     if is_code_exec_enabled():
         logger.warning(
             "[Security] AETHELNET_ALLOW_CODE_EXEC is enabled: NaaS nodes can run Python/Lua "

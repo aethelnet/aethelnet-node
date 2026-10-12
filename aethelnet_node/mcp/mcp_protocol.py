@@ -1,8 +1,9 @@
 from typing import Dict, Any, List
 import logging
 from aethelnet_node.database import load_graph_state, load_kanban_board, get_node_text
-from aethelnet_node.command_runner import run_command_safely
-from aethelnet_node.research_scouter import scout_arxiv_optimizations
+
+# command_runner / research_scouter are optional modules that are not part of this repository;
+# they are imported lazily so that this module (and the MCP HTTP route) can load without them.
 
 logger = logging.getLogger("LGNN.MCP")
 
@@ -53,13 +54,26 @@ def get_mcp_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "lgnn_topological_recovery",
-            "description": "Topological concept retrieval for context recovery: When an agent encounters retrieval deadlocks, forgotten concepts, or the 'Tip of the Tongue' phenomenon (reversal curse), provide the context. The LGNN queries the topological graph to return latent neighbor concepts to bridge semantic gaps.",
+            "description": "Associative recall for when you are stuck: describe what you are trying to do or remember. Returns the most relevant concepts from the shared graph (keywords + meaning), plus concepts that agents used together with them, each with its claims and whether they are contested.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "context": {"type": "string", "description": "The surrounding context or keywords of the concept to retrieve."}
+                    "context": {"type": "string", "description": "What you are trying to do or remember, in your own words."},
+                    "k": {"type": "integer", "description": "How many concepts to return (default 8, max 50)."},
+                    "use_popularity": {"type": "boolean", "description": "Also favour concepts agents touch often (default false)."}
                 },
                 "required": ["context"]
+            }
+        },
+        {
+            "name": "lgnn_mark_useful",
+            "description": "Tell the graph which recalled concepts actually helped. They become linked as 'used together' for your current task, which improves future recall for every agent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Node ids that helped."}
+                },
+                "required": ["node_ids"]
             }
         },
         {
@@ -113,6 +127,10 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             }
             
         elif name == "lgnn_execute_cmd":
+            try:
+                from aethelnet_node.command_runner import run_command_safely
+            except ImportError:
+                return {"isError": True, "content": [{"type": "text", "text": "lgnn_execute_cmd is not available on this node."}]}
             cmd = arguments.get("command")
             res = run_command_safely(cmd)
             return {
@@ -125,6 +143,10 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             }
             
         elif name == "lgnn_scout_papers":
+            try:
+                from aethelnet_node.research_scouter import scout_arxiv_optimizations
+            except ImportError:
+                return {"isError": True, "content": [{"type": "text", "text": "lgnn_scout_papers is not available on this node."}]}
             q = arguments.get("query", "neural ode graph optimization")
             res = scout_arxiv_optimizations(q)
             return {
@@ -137,24 +159,19 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         elif name in ("lgnn_topological_recovery", "lgnn_topological_bypass"):
-            # Semantic Hinting / Context recovery implementation
+            # Associative recall (aethelnet_node/recall.py). The previous version ignored the context and
+            # returned the first five nodes; see aethelnet-core/research/recall_benchmark for the comparison.
+            from aethelnet_node.recall import recall, format_recall
             context_str = arguments.get("context") or arguments.get("blocked_concept_context", "")
-            # We fetch all nodes and do a naive substring match or fallback to random dense nodes to bridge semantic gap
-            nodes, edges, metrics = load_graph_state()
-            hints = []
-            for nid in nodes.keys():
-                if len(hints) < 5:
-                    hints.append(nid)
-            
-            recovery_payload = f"The topological graph suggests these surrounding concepts to bridge the gap: {', '.join(hints)}."
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": recovery_payload
-                    }
-                ]
-            }
+            result = recall(context_str, k=int(arguments.get("k", 8) or 8),
+                            use_popularity=bool(arguments.get("use_popularity", False)))
+            return {"content": [{"type": "text", "text": format_recall(result)}], "structuredContent": result}
+
+        elif name == "lgnn_mark_useful":
+            from aethelnet_node.coaccess import touch
+            node_ids = [str(n) for n in (arguments.get("node_ids") or []) if str(n).strip()]
+            links = touch(node_ids, kind="useful")
+            return {"content": [{"type": "text", "text": f"Noted {len(node_ids)} concepts as used together ({links} new links)."}]}
 
         elif name == "lgnn_perceive_environment":
             from aethelnet_node.sensors import SensorArray

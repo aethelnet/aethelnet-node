@@ -44,9 +44,10 @@ Without `sentence-transformers` the node uses deterministic SHA-256 embeddings. 
    (see `.env.example`); `.env` is git-ignored. Before committing a cleanup, prove it with
    `git grep -nE "<pattern>"`. Anything ever pushed stays in git history, so leaked keys must be rotated,
    not just deleted.
-3. **Security defaults stay on.** Write requests need `AETHELNET_AUTH_TOKEN` (or come from localhost),
-   NaaS code execution needs `AETHELNET_ALLOW_CODE_EXEC=1`. Don't weaken these to make a feature work;
-   send the token instead (`security.auth_headers()`).
+3. **Security defaults stay on.** Write requests need an agent token (`python -m aethelnet_node.agents add <id>`)
+   or `AETHELNET_AUTH_TOKEN` (or come from localhost), NaaS code execution needs `AETHELNET_ALLOW_CODE_EXEC=1`.
+   Don't weaken these to make a feature work; send the token instead (`security.auth_headers()`).
+   Use your own agent token, never another agent's, so provenance stays true.
 4. **New endpoints get a test** in `tests/`. Use `fastapi.testclient.TestClient`.
 5. **Keep docs honest.** README claims (complexity, test counts, guarantees) must match the code.
    If you change behavior, update the README in the same PR.
@@ -56,5 +57,5 @@ Without `sentence-transformers` the node uses deterministic SHA-256 embeddings. 
 ## Environment variables
 
 See `.env.example` for the full list. The important ones:
-`AETHELNET_AUTH_TOKEN`, `AETHELNET_CORS_ORIGINS`, `AETHELNET_PEERS`, `AETHELNET_PEER_TOKEN`,
+`AETHELNET_AGENTS_FILE`, `AETHELNET_AUTH_TOKEN`, `AETHELNET_CORS_ORIGINS`, `AETHELNET_PEERS`, `AETHELNET_PEER_TOKEN`,
 `AETHELNET_ALLOW_CODE_EXEC`, `DB_PROVIDER`, `DATABASE_URL`.
