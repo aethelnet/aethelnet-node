@@ -293,3 +293,16 @@ def format_recall(result: Dict[str, Any]) -> str:
     lines.append("If some of these helped, call lgnn_mark_useful with their node ids so the graph learns "
                  "which concepts belong together.")
     return "\n".join(lines)
+
+
+def reset_index() -> None:
+    """Clear in-memory cached indices and dense embeddings (useful for tests and DB switching)."""
+    with _index_lock:
+        _index.version = None
+        _index.ids = []
+        _index.labels = []
+        _index.texts = []
+        _index.postings = {}
+        _index.lengths = np.array([])
+        _index.dense = None
+        _index.dense_cache = {}

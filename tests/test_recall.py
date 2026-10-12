@@ -7,7 +7,7 @@ from unittest.mock import patch
 import torch
 from fastapi.testclient import TestClient
 
-from aethelnet_node import agents, coaccess
+from aethelnet_node import agents, coaccess, database
 from aethelnet_node.database import get_db_connection, init_db, save_node
 from aethelnet_node.main import app
 from aethelnet_node.recall import recall
@@ -29,15 +29,28 @@ class TestAssociativeRecall(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
         path = os.path.join(cls.tmp, "agents.json")
+        cls.test_db = os.path.join(cls.tmp, "test_recall.db")
+        cls.orig_db_path = database.DB_PATH
+        cls.env = patch.dict(os.environ, {
+            "AETHELNET_AGENTS_FILE": path,
+            "AETHELNET_DB_PATH": cls.test_db,
+            "AETHELNET_AUTH_TOKEN": "",
+        })
+        cls.env.start()
+        database.DB_PATH = cls.test_db
+        database.init_db()
+        from aethelnet_node.recall import reset_index
+        reset_index()
         cls.gemini = agents.add_agent("gemini", path=path)
         cls.claude = agents.add_agent("claude", path=path)
-        cls.env = patch.dict(os.environ, {"AETHELNET_AGENTS_FILE": path, "AETHELNET_AUTH_TOKEN": ""})
-        cls.env.start()
         cls.client = TestClient(app)
 
     @classmethod
     def tearDownClass(cls):
         cls.env.stop()
+        database.DB_PATH = cls.orig_db_path
+        from aethelnet_node.recall import reset_index
+        reset_index()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def _create(self, node_id, text, token, task=None, **extra):
@@ -119,9 +132,19 @@ class TestMcpRoute(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
         path = os.path.join(cls.tmp, "agents.json")
-        cls.token = agents.add_agent("mcp-agent", path=path)
-        cls.env = patch.dict(os.environ, {"AETHELNET_AGENTS_FILE": path, "AETHELNET_AUTH_TOKEN": ""})
+        cls.test_db = os.path.join(cls.tmp, "test_mcp.db")
+        cls.orig_db_path = database.DB_PATH
+        cls.env = patch.dict(os.environ, {
+            "AETHELNET_AGENTS_FILE": path,
+            "AETHELNET_DB_PATH": cls.test_db,
+            "AETHELNET_AUTH_TOKEN": "",
+        })
         cls.env.start()
+        database.DB_PATH = cls.test_db
+        database.init_db()
+        from aethelnet_node.recall import reset_index
+        reset_index()
+        cls.token = agents.add_agent("mcp-agent", path=path)
         cls.client = TestClient(app)
         cls.auth = {"Authorization": f"Bearer {cls.token}"}
         res = cls.client.post("/api/lgnn/node", headers=cls.auth,
@@ -131,6 +154,9 @@ class TestMcpRoute(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.env.stop()
+        database.DB_PATH = cls.orig_db_path
+        from aethelnet_node.recall import reset_index
+        reset_index()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def _call(self, name, arguments, headers=None):
