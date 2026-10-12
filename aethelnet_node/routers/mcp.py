@@ -23,6 +23,9 @@ HTTP_EXPOSED_TOOLS = {
     "lgnn_mark_useful",
     "lgnn_read_node_content",
     "lgnn_query_graph",
+    "lgnn_write_concept",
+    "lgnn_link_concepts",
+    "lgnn_search_concepts",
 }
 
 
