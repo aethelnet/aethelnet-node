@@ -32,3 +32,4 @@ dist/
 .vscode/
 .DS_Store
 .visited_*.json
+research_scout/
