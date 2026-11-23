@@ -157,3 +157,24 @@ def test_mcp_write_and_link_learn_coaccess_for_recovery():
     finally:
         current_task.reset(token_task)
         current_agent.reset(token_agent)
+
+
+def test_mcp_stdio_protocol_handshake_and_ping(monkeypatch, capsys):
+    from aethelnet_node.mcp import mcp_stdio_server
+
+    monkeypatch.setattr(mcp_stdio_server, "API_URL", "")
+    mcp_stdio_server.handle_request({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26"},
+    })
+    mcp_stdio_server.handle_request({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    mcp_stdio_server.handle_request({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+    mcp_stdio_server.handle_request({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert len(lines) == 3  # notification must emit zero frames
+    assert lines[0]["result"]["protocolVersion"] == "2025-03-26"
+    assert lines[1]["result"] == {}
+    assert any(t["name"] == "lgnn_topological_recovery" for t in lines[2]["result"]["tools"])

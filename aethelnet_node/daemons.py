@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 import json
 from typing import Dict, Any, List, Optional
@@ -7,7 +8,7 @@ import torch
 
 from aethelnet_node.database import (
     save_node, delete_node, save_edge, delete_edge,
-    get_node_text, get_db_connection
+    get_node_text, get_db_connection, serialize_tensor
 )
 from aethelnet_node.state import (
     graph_instance, node_metrics,
@@ -77,18 +78,28 @@ def run_single_hebbian_cycle() -> Dict[str, Any]:
         strain = graph_instance.get_node_strain(orig_id)
         metrics["tether_strain"] = round(strain, 4)
         
-        # Periodically persist node state to SQLite
+        # Periodically persist evolved physics without clobbering human/agent updated_by or last_updated
         try:
-            text_content = get_node_text(orig_id)
-            save_node(
-                orig_id, state_tensor, mean_act,
-                confidence, metrics.get("plateau_factor", 0.0),
-                orig_id in REALITY_ANCHORS, metrics.get("help_chain", False),
-                text_content=text_content,
-                source_tag=metrics.get("source_tag", "internal"),
-                node_type=metrics.get("node_type", "standard"),
-                meta_data=metrics.get("meta_data")
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE lgnn_nodes SET embedding = ?, mean_activation = ?, confidence = ? WHERE id = ?",
+                (serialize_tensor(state_tensor), mean_act, confidence, orig_id),
             )
+            updated_rows = cur.rowcount
+            conn.commit()
+            conn.close()
+            if updated_rows == 0:
+                text_content = get_node_text(orig_id)
+                save_node(
+                    orig_id, state_tensor, mean_act,
+                    confidence, metrics.get("plateau_factor", 0.0),
+                    orig_id in REALITY_ANCHORS, metrics.get("help_chain", False),
+                    text_content=text_content,
+                    source_tag=metrics.get("source_tag", "internal"),
+                    node_type=metrics.get("node_type", "standard"),
+                    meta_data=metrics.get("meta_data")
+                )
         except Exception as e:
             logger.debug(f"[Hebbian DB] Failed to save node {orig_id}: {e}")
             
@@ -147,14 +158,15 @@ async def unified_hebbian_daemon():
                 for ws in disconnected:
                     active_websockets.discard(ws)
 
-            # Trigger autonomous neurosymbolic synthesis on emergent Hebbian bridges
-            new_edges = report.get("new_edges", [])
-            for u, v, w in new_edges:
-                if w >= 0.65:
-                    from aethelnet_node.synthesis import synthesis_engine
-                    if not synthesis_engine.is_synthesizing:
-                        asyncio.create_task(_run_and_broadcast_synthesis(u, v, w))
-                        break
+            # Trigger autonomous neurosymbolic synthesis only when explicitly opted-in
+            if os.getenv("AETHELNET_AUTO_SYNTHESIS", "0") == "1":
+                new_edges = report.get("new_edges", [])
+                for u, v, w in new_edges:
+                    if w >= 0.65:
+                        from aethelnet_node.synthesis import synthesis_engine
+                        if not synthesis_engine.is_synthesizing:
+                            asyncio.create_task(_run_and_broadcast_synthesis(u, v, w))
+                            break
                     
         except asyncio.CancelledError:
             logger.info("[Hebbian Core] Unified Hebbian loop cancelled.")
@@ -162,7 +174,8 @@ async def unified_hebbian_daemon():
         except Exception as e:
             logger.error(f"[Hebbian Core] Cycle #{_hebbian_cycle_count} exception: {e}", exc_info=True)
             
-        await asyncio.sleep(10) # 10-second learning pulse
+        interval = max(5, int(os.getenv("AETHELNET_HEBBIAN_INTERVAL", "60") or 60))
+        await asyncio.sleep(interval)
 
 async def _run_and_broadcast_synthesis(u: str, v: str, resonance: float):
     try:
@@ -184,9 +197,12 @@ async def _run_and_broadcast_synthesis(u: str, v: str, resonance: float):
 
 def start_all_daemons():
     """
-    Unified entrypoint: Spawns ONLY the clean Hebbian cognitive daemon.
+    Unified entrypoint: Spawns ONLY the clean Hebbian cognitive daemon (unless disabled via env).
     All legacy noise (arXiv crawlers, cosmic sensors, nightmare spawners, P2P flood) is decommissioned.
     """
+    if os.getenv("AETHELNET_DISABLE_DAEMON", "0") == "1":
+        logger.info("[Daemons] Hebbian background daemon disabled via AETHELNET_DISABLE_DAEMON=1.")
+        return []
     tasks = [
         asyncio.create_task(unified_hebbian_daemon())
     ]

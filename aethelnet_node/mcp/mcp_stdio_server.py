@@ -15,12 +15,16 @@ Never crashes with 'Connection Refused'.
 import sys
 import json
 import urllib.request
+import urllib.error
 import traceback
 import os
 
 API_URL = os.getenv("AETHELNET_API_URL", "http://127.0.0.1:8000/api/lgnn")
 _TOKEN = os.getenv("AETHELNET_AUTH_TOKEN", "").strip()
+_TASK = os.getenv("AETHELNET_TASK_ID", "").strip()
 AUTH_HEADERS = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
+if _TASK:
+    AUTH_HEADERS["X-Aethelnet-Task"] = _TASK
 
 # Configure agent identity for in-process direct mode
 def setup_direct_mode_agent():
@@ -44,14 +48,16 @@ def setup_direct_mode_agent():
 
 
 def execute_tools_list() -> list:
-    """Tries HTTP first; falls back seamlessly to in-process definitions."""
+    """Tries HTTP first; falls back seamlessly to in-process definitions when daemon is offline."""
     if API_URL:
         try:
-            r = urllib.request.Request(f"{API_URL}/mcp/tools", method="GET")
+            r = urllib.request.Request(f"{API_URL}/mcp/tools", headers=AUTH_HEADERS, method="GET")
             with urllib.request.urlopen(r, timeout=1.5) as res:
-                data = json.loads(res.read().decode('utf-8'))
+                data = json.loads(res.read().decode("utf-8"))
                 return data.get("tools", [])
-        except Exception:
+        except urllib.error.HTTPError as e:
+            return []
+        except (urllib.error.URLError, TimeoutError, OSError):
             pass
 
     from aethelnet_node.mcp.mcp_protocol import get_mcp_tools
@@ -59,7 +65,7 @@ def execute_tools_list() -> list:
 
 
 def execute_tool_call(name: str, args: dict) -> dict:
-    """Tries HTTP first; falls back seamlessly to in-process tool execution."""
+    """Tries HTTP first; falls back to in-process execution only when daemon is unreachable."""
     if API_URL:
         try:
             payload = json.dumps({"name": name, "arguments": args}).encode("utf-8")
@@ -70,12 +76,18 @@ def execute_tool_call(name: str, args: dict) -> dict:
                 method="POST"
             )
             with urllib.request.urlopen(r, timeout=30) as res:
-                data = json.loads(res.read().decode('utf-8'))
+                data = json.loads(res.read().decode("utf-8"))
                 return {
                     "content": data.get("content", [{"type": "text", "text": "Empty response"}]),
                     "isError": data.get("isError", False)
                 }
-        except Exception:
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="ignore")
+            return {
+                "content": [{"type": "text", "text": f"Aethelnet node HTTP {e.code}: {detail or e.reason}"}],
+                "isError": True,
+            }
+        except (urllib.error.URLError, TimeoutError, OSError):
             pass
 
     # Direct in-process execution fallback
@@ -100,19 +112,24 @@ def send_response(req_id, result=None, error=None):
 
 def handle_request(req):
     method = req.get("method")
-    params = req.get("params", {})
+    params = req.get("params") or {}
     req_id = req.get("id")
+
+    # JSON-RPC 2.0 notifications carry no id and must never emit a response frame
+    if req_id is None or (isinstance(method, str) and method.startswith("notifications/")):
+        return
 
     try:
         if method == "initialize":
+            client_proto = str(params.get("protocolVersion") or "2024-11-05")
             send_response(req_id, result={
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": client_proto,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "aethelnet_node_mcp", "version": "2.0.0"}
             })
 
-        elif method == "notifications/initialized":
-            pass
+        elif method == "ping":
+            send_response(req_id, result={})
 
         elif method == "tools/list":
             tools = execute_tools_list()
