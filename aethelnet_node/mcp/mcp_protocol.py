@@ -162,10 +162,11 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             limit = int(arguments.get("limit", 50) or 50)
             nodes_summary = []
             
-            # Fetch authors from database for visual styling
+            # Fetch authors & epistemic metadata from database
+            from aethelnet_node.state import graph_instance, infer_epistemic_tier
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT id, created_by, label, node_type FROM lgnn_nodes")
+            c.execute("SELECT id, created_by, label, node_type, is_grounded, confidence FROM lgnn_nodes")
             author_map = {row["id"]: row for row in c.fetchall()}
             conn.close()
 
@@ -173,28 +174,37 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 author_info = author_map.get(nid, {})
                 creator = author_info["created_by"] if author_info and "created_by" in author_info.keys() else "system"
                 color_info = agent_id_to_color(creator)
+                ntype = author_info["node_type"] if author_info and "node_type" in author_info.keys() else "concept"
+                is_gnd = bool(author_info["is_grounded"]) if author_info and "is_grounded" in author_info.keys() else False
+                conf = float(m.get("confidence", 0.8))
+                phys = graph_instance.get_node_physics(nid)
+                tier = phys["tier"] or infer_epistemic_tier(ntype, is_grounded=is_gnd, confidence=conf)
+                tau = graph_instance.get_effective_tau(nid)
                 nodes_summary.append({
                     "id": nid,
                     "label": author_info["label"] if author_info and "label" in author_info.keys() and author_info["label"] else nid,
-                    "confidence": m.get("confidence", 0.8),
+                    "confidence": conf,
                     "plateau_factor": m.get("plateau_factor", 0.0),
                     "created_by": creator,
                     "color": color_info["hex"],
-                    "node_type": author_info["node_type"] if author_info and "node_type" in author_info.keys() else "concept"
+                    "node_type": ntype,
+                    "epistemic_tier": tier,
+                    "effective_tau": round(tau, 4) if tau is not None else None,
                 })
 
             summary_text = (
-                f"Aethelnet Graph State:\n"
+                f"Aethelnet Graph State (liquid_mode={graph_instance.liquid_mode}):\n"
                 f"- Total Active Nodes: {len(metrics)}\n"
                 f"- Total Topological Bridges: {len(edges)}\n"
                 f"- Showing first {len(nodes_summary)} nodes:\n"
             )
             for n in nodes_summary[:15]:
-                summary_text += f"  * [{n['id']}] ({n['node_type']}) by {n['created_by']} [{n['color']}]: confidence {n['confidence']:.2f}\n"
+                summary_text += f"  * [{n['id']}] ({n['node_type']}, tier={n['epistemic_tier']}) by {n['created_by']} [{n['color']}]: confidence {n['confidence']:.2f}\n"
 
             return {
                 "content": [{"type": "text", "text": summary_text}],
                 "structuredContent": {
+                    "liquid_mode": graph_instance.liquid_mode,
                     "total_nodes": len(metrics),
                     "total_edges": len(edges),
                     "nodes": nodes_summary
@@ -209,7 +219,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             text = get_node_text(nid)
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT id, label, node_type, confidence, created_by, updated_by, last_updated, meta_data FROM lgnn_nodes WHERE id = ?", (nid,))
+            c.execute("SELECT id, label, node_type, is_grounded, confidence, created_by, updated_by, last_updated, meta_data FROM lgnn_nodes WHERE id = ?", (nid,))
             row = c.fetchone()
             
             # Fetch bridges connected to this node
@@ -227,6 +237,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
             import time as _time
             from aethelnet_node.coaccess import DEFAULT_HALF_LIFE_DAYS, _decay_factor
+            from aethelnet_node.state import graph_instance, infer_epistemic_tier
             now_ts = _time.time()
             coaccess_links = []
             for cr in coaccess_rows:
@@ -238,10 +249,16 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
             creator = row["created_by"] or "unknown"
             color_info = agent_id_to_color(creator)
+            phys = graph_instance.get_node_physics(nid)
+            tier = phys["tier"] or infer_epistemic_tier(
+                row["node_type"], is_grounded=bool(row["is_grounded"]), confidence=row["confidence"]
+            )
+            tau = graph_instance.get_effective_tau(nid)
+            tau_str = f" | **τ_eff**: `{tau:.3f}`" if tau is not None else ""
             
             card = (
                 f"# Concept: {row['label'] or row['id']}\n"
-                f"**ID**: `{row['id']}` | **Type**: `{row['node_type']}` | **Confidence**: {row['confidence']:.2f}\n"
+                f"**ID**: `{row['id']}` | **Type**: `{row['node_type']}` | **Tier**: `{tier}`{tau_str} | **Confidence**: {row['confidence']:.2f}\n"
                 f"**Author**: `{creator}` ({color_info['hex']}) | **Last Updated**: {row['last_updated']}\n\n"
                 f"## Content\n"
                 f"{text or '_No text content recorded._'}\n\n"
@@ -260,6 +277,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "id": row["id"],
                     "label": row["label"],
                     "node_type": row["node_type"],
+                    "epistemic_tier": tier,
+                    "effective_tau": round(tau, 4) if tau is not None else None,
                     "confidence": row["confidence"],
                     "created_by": creator,
                     "color": color_info,
@@ -293,19 +312,29 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 vec = [(b / 255.0) - 0.5 for b in (h * 24)[:768]]
                 emb = torch.tensor(vec, dtype=torch.float32)
 
+            is_grounded_node = node_type in {"axiom", "invariant"}
             save_node(
                 node_id=node_id,
                 embedding=emb,
                 mean_activation=1.0,
                 confidence=confidence,
                 plateau_factor=0.0,
-                is_grounded=True,
+                is_grounded=is_grounded_node,
                 help_chain=False,
                 text_content=text_content,
                 node_type=node_type,
                 source_tag=source_tag,
                 meta_data=meta_str,
                 label=label
+            )
+
+            from aethelnet_node.state import sync_node_physics
+            phys = sync_node_physics(
+                node_id,
+                node_type=node_type,
+                is_grounded=is_grounded_node,
+                confidence=confidence,
+                embedding=emb,
             )
 
             agent = get_current_agent()
@@ -317,7 +346,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             resp = (
                 f"[SUCCESS] Concept '{node_id}' successfully saved in Aethelnet graph!\n"
                 f"- Label: {label}\n"
-                f"- Type: {node_type} | Confidence: {confidence:.2f}\n"
+                f"- Type: {node_type} (Tier {phys.get('tier')}) | Confidence: {confidence:.2f}\n"
                 f"- Provenance Author: {agent} (Color: {color_info['hex']})\n"
                 f"- Embedding: 768-dim neural representation indexed."
             )
@@ -327,6 +356,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "node_id": node_id,
                     "label": label,
                     "node_type": node_type,
+                    "epistemic_tier": phys.get("tier"),
                     "confidence": confidence,
                     "created_by": agent,
                     "color": color_info

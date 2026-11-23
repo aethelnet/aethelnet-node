@@ -322,3 +322,24 @@ async def evolve_text_endpoint(data: EvolveTextRequest):
         "status": "success",
         "evolved_text": "\n".join(evolution_lines)
     }
+
+
+class ConsolidateRequest(BaseModel):
+    max_pairs: int = 8
+    use_llm: bool = True
+    dry_run: bool = False
+    model: Optional[str] = None
+
+
+@router.post("/consolidate")
+async def trigger_consolidation(req: ConsolidateRequest):
+    """Run Memory Immune physics sync and Gemma 4 contradiction/distillation audit."""
+    import asyncio
+    from aethelnet_node.consolidator import run_consolidation
+    return await asyncio.to_thread(
+        run_consolidation,
+        max_pairs=req.max_pairs,
+        use_llm=req.use_llm,
+        dry_run=req.dry_run,
+        model=req.model,
+    )

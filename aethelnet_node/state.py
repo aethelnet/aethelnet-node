@@ -22,9 +22,51 @@ DEFAULT_CONFIDENCE = (math.sqrt(5) - 1) / 2  # Reciprocal of Golden Ratio (~0.61
 KNOWLEDGE_CONFIDENCE = math.pi - 2.3         # Pi-derived starting confidence (~0.84159265)
 DOCUMENT_CONFIDENCE = math.sin(1.1)          # Angular sine of the path (~0.89120736)
 
-# Global GNN and metrics state
-graph_instance = LiquidGraph(hidden_dim=HIDDEN_DIM, resonance_threshold=0.65, decay_rate=0.05, tether_strength=0.50)
+# Global GNN and metrics state (Idea #4 epistemic tiers + Idea #8 Kuramoto LTC gate)
+LIQUID_MODE_ENABLED = os.getenv("AETHELNET_LIQUID_MODE", "1") != "0"
+graph_instance = LiquidGraph(
+    hidden_dim=HIDDEN_DIM,
+    resonance_threshold=0.65,
+    decay_rate=0.05,
+    tether_strength=0.50,
+    liquid_mode=LIQUID_MODE_ENABLED,
+)
 node_metrics: Dict[str, Dict[str, Any]] = {}
+
+
+def infer_epistemic_tier(
+    node_type: Optional[str] = "standard",
+    is_grounded: bool = False,
+    confidence: Optional[float] = None,
+) -> int:
+    """Map node provenance/type to Idea #4 epistemic stiffness tier (1=axiom .. 4=speculation)."""
+    nt = str(node_type or "standard").strip().lower()
+    if is_grounded or nt in {"axiom", "invariant"}:
+        return 1
+    if nt in {"speculation", "tabu", "dream", "rumor"}:
+        return 4
+    if nt in {"evidence", "verified"} or (nt == "concept" and (confidence or 0.0) >= 0.90):
+        return 2
+    return 3
+
+
+def sync_node_physics(
+    node_id: str,
+    node_type: Optional[str] = "standard",
+    is_grounded: bool = False,
+    confidence: Optional[float] = None,
+    embedding: Optional[torch.Tensor] = None,
+) -> Dict[str, Any]:
+    """Ensure a node in RAM carries the right Idea #4 epistemic tier and return its physics."""
+    tier = infer_epistemic_tier(node_type=node_type, is_grounded=is_grounded, confidence=confidence)
+    if graph_instance.nx_graph.has_node(node_id):
+        return graph_instance.set_node_physics(node_id, tier=tier)
+    if embedding is not None:
+        vec = embedding.detach().to(dtype=torch.float32)
+        if vec.shape == (graph_instance.hidden_dim,):
+            graph_instance.add_node(node_id, vec, tier=tier)
+            return graph_instance.get_node_physics(node_id)
+    return {"tier": tier}
 
 # Reality Anchors (The Genesis Seed)
 REALITY_ANCHORS = {
@@ -149,6 +191,26 @@ def load_all_from_db():
         safe_id = graph_instance._safe_id(nid)
         if nid in metrics:
             metrics[safe_id] = metrics[nid]
+
+    # Apply Idea #4 epistemic tiers from persisted DB metadata
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, node_type, is_grounded, confidence FROM lgnn_nodes")
+        for r in cur.fetchall():
+            nid = r["id"]
+            if graph_instance.nx_graph.has_node(nid):
+                tier = infer_epistemic_tier(
+                    node_type=r["node_type"],
+                    is_grounded=bool(r["is_grounded"]),
+                    confidence=r["confidence"],
+                )
+                graph_instance.set_node_physics(nid, tier=tier)
+                if nid in metrics:
+                    metrics[nid]["epistemic_tier"] = tier
+        conn.close()
+    except Exception as e:
+        logger.debug(f"[Aethelnet] Epistemic tier sync skipped: {e}")
         
     for u, v, weight in edges:
         u_safe = graph_instance._safe_id(u)
