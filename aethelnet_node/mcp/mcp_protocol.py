@@ -14,6 +14,7 @@ from aethelnet_node.database import (
     get_current_agent,
     log_agent_write,
 )
+from aethelnet_node.agents import current_task
 from aethelnet_node.provenance import agent_id_to_color
 
 logger = logging.getLogger("LGNN.MCP")
@@ -58,33 +59,44 @@ def get_mcp_tools() -> List[Dict[str, Any]]:
                     "node_type": {"type": "string", "description": "Type of node: 'concept', 'hypothesis', 'invariant', 'evidence', 'tabu' (default: 'concept')."},
                     "confidence": {"type": "number", "description": "Confidence score between 0.0 and 1.0 (default: 0.85)."},
                     "source_tag": {"type": "string", "description": "Source tag: 'agent_inference', 'human_note', 'code_audit' (default: 'agent_inference')."},
-                    "meta_data": {"type": "object", "description": "Optional arbitrary JSON metadata dictionary."}
+                    "meta_data": {"type": "object", "description": "Optional arbitrary JSON metadata dictionary."},
+                    "task_id": {"type": "string", "description": "Optional task boundary ID to scope Hebbian co-access edges strictly to related concepts."},
+                    "skip_coaccess": {"type": "boolean", "description": "Set true during bulk seeding or unrelated housekeeping so co-access cliques are not formed."}
                 },
                 "required": ["node_id"]
             }
         },
         {
             "name": "lgnn_link_concepts",
-            "description": "Create a directional semantic bridge or associative edge between two concepts in the Aethelnet graph.",
+            "description": "Create a directional semantic bridge or claim edge between two concepts, optionally carrying verbatim evidence or a contested conflict flag.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "ID of the source concept node."},
                     "target": {"type": "string", "description": "ID of the target concept node."},
                     "relation": {"type": "string", "description": "Relation/edge type: 'causes', 'depends_on', 'contradicts', 'analogous_to', 'associated_with' (default: 'associated_with')."},
-                    "weight": {"type": "number", "description": "Strength/weight of the link (default: 1.0)."}
+                    "weight": {"type": "number", "description": "Strength/weight of the link (default: 1.0)."},
+                    "evidence_quote": {"type": "string", "description": "Optional verbatim quote or justification supporting this claim."},
+                    "source_doc_id": {"type": "string", "description": "Optional source document or commit reference."},
+                    "is_contested": {"type": "boolean", "description": "Set true if this edge flags a disputed or contradicting claim."},
+                    "task_id": {"type": "string", "description": "Optional task boundary ID for co-access tracking."},
+                    "skip_coaccess": {"type": "boolean", "description": "Set true to create the structural bridge without reinforcing co-access."}
                 },
                 "required": ["source", "target"]
             }
         },
         {
             "name": "lgnn_search_concepts",
-            "description": "Search the concept graph by semantic meaning or keywords. Returns matched concepts with creators, confidence, and preview.",
+            "description": "Focused, filterable search by meaning and keywords (without broad associative spreading by default; use lgnn_topological_recovery for associative recall).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search term or natural language description of what you are looking for."},
-                    "limit": {"type": "integer", "description": "Maximum number of results to return (default: 10)."}
+                    "limit": {"type": "integer", "description": "Maximum number of results to return (default: 10)."},
+                    "node_type": {"type": "string", "description": "Optional filter: e.g. 'invariant', 'hypothesis', 'concept', 'evidence'."},
+                    "created_by": {"type": "string", "description": "Optional filter by provenance author (e.g. 'antigravity', 'claude')."},
+                    "epistemic_tier": {"type": "integer", "description": "Optional filter by epistemic tier (1=axiom, 2=verified, 3=hypothesis, 4=speculation)."},
+                    "use_associations": {"type": "boolean", "description": "Enable Hebbian co-access spreading activation during search (default: false)."}
                 },
                 "required": ["query"]
             }
@@ -108,9 +120,23 @@ def get_mcp_tools() -> List[Dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Node ids that helped."}
+                    "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Node ids that helped."},
+                    "task_id": {"type": "string", "description": "Optional task boundary ID for co-access tracking."}
                 },
                 "required": ["node_ids"]
+            }
+        },
+        {
+            "name": "lgnn_archive_concept",
+            "description": "Soft-archive an obsolete or superseded concept node without erasing its audit provenance, removing it from active recall.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string", "description": "ID of the concept node to archive."},
+                    "reason": {"type": "string", "description": "Short explanation of why the concept is archived."},
+                    "superseded_by": {"type": "string", "description": "Optional replacement concept node_id to link via 'superseded_by'."}
+                },
+                "required": ["node_id"]
             }
         },
         {
@@ -159,7 +185,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if name == "lgnn_query_graph":
             nodes, edges, metrics = load_graph_state()
-            limit = int(arguments.get("limit", 50) or 50)
+            limit = max(1, min(int(arguments.get("limit", 50) or 50), 200))
             nodes_summary = []
             
             # Fetch authors & epistemic metadata from database
@@ -198,7 +224,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 f"- Total Topological Bridges: {len(edges)}\n"
                 f"- Showing first {len(nodes_summary)} nodes:\n"
             )
-            for n in nodes_summary[:15]:
+            for n in nodes_summary:
                 summary_text += f"  * [{n['id']}] ({n['node_type']}, tier={n['epistemic_tier']}) by {n['created_by']} [{n['color']}]: confidence {n['confidence']:.2f}\n"
 
             return {
@@ -222,9 +248,28 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             c.execute("SELECT id, label, node_type, is_grounded, confidence, created_by, updated_by, last_updated, meta_data FROM lgnn_nodes WHERE id = ?", (nid,))
             row = c.fetchone()
             
-            # Fetch bridges connected to this node
-            c.execute("SELECT target, relation_type, weight FROM lgnn_multigraph_edges WHERE source = ? UNION SELECT source, relation_type, weight FROM lgnn_multigraph_edges WHERE target = ?", (nid, nid))
-            edges = [{"node": r[0], "relation": r[1], "weight": r[2]} for r in c.fetchall()]
+            # Fetch bridges connected to this node preserving exact direction & contested status
+            c.execute(
+                """
+                SELECT target AS other_node, relation_type, weight, is_contested, evidence_quote, 'out' AS direction
+                FROM lgnn_multigraph_edges WHERE source = ?
+                UNION ALL
+                SELECT source AS other_node, relation_type, weight, is_contested, evidence_quote, 'in' AS direction
+                FROM lgnn_multigraph_edges WHERE target = ?
+                """,
+                (nid, nid),
+            )
+            edges = [
+                {
+                    "node": r[0],
+                    "relation": r[1],
+                    "weight": r[2],
+                    "contested": bool(r[3]),
+                    "evidence": r[4] or "",
+                    "direction": r[5],
+                }
+                for r in c.fetchall()
+            ]
             c.execute(
                 "SELECT node_a, node_b, weight, updated_at FROM agent_coaccess_edges WHERE node_a = ? OR node_b = ?",
                 (nid, nid),
@@ -264,8 +309,15 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 f"{text or '_No text content recorded._'}\n\n"
                 f"## Connected Bridges ({len(edges)})\n"
             )
-            for e in edges[:10]:
-                card += f"- `--[{e['relation']}:{e['weight']:.1f}]-->` `{e['node']}`\n"
+            for e in edges[:15]:
+                arrow = (
+                    f"--[{e['relation']}:{e['weight']:.1f}]-->"
+                    if e["direction"] == "out"
+                    else f"<--[{e['relation']}:{e['weight']:.1f}]--"
+                )
+                flag = " [CONTESTED]" if e["contested"] else ""
+                ev = f' ("{e["evidence"][:120]}")' if e["evidence"] else ""
+                card += f"- `{arrow}` `{e['node']}`{flag}{ev}\n"
             if coaccess_links:
                 card += f"\n## Learned Hebbian Co-Access ({len(coaccess_links)})\n"
                 for cl in coaccess_links[:10]:
@@ -300,6 +352,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             source_tag = str(arguments.get("source_tag", "agent_inference")).strip()
             meta_data = arguments.get("meta_data", {})
             meta_str = json.dumps(meta_data) if isinstance(meta_data, dict) else str(meta_data or "{}")
+            task_id = str(arguments.get("task_id", "") or "").strip()
+            skip_coaccess = bool(arguments.get("skip_coaccess", False))
 
             # Compute neural embedding with self-healing fallback
             try:
@@ -313,35 +367,39 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 emb = torch.tensor(vec, dtype=torch.float32)
 
             is_grounded_node = node_type in {"axiom", "invariant"}
-            save_node(
-                node_id=node_id,
-                embedding=emb,
-                mean_activation=1.0,
-                confidence=confidence,
-                plateau_factor=0.0,
-                is_grounded=is_grounded_node,
-                help_chain=False,
-                text_content=text_content,
-                node_type=node_type,
-                source_tag=source_tag,
-                meta_data=meta_str,
-                label=label
-            )
+            task_tok = current_task.set(task_id) if task_id else None
+            try:
+                save_node(
+                    node_id=node_id,
+                    embedding=emb,
+                    mean_activation=1.0,
+                    confidence=confidence,
+                    plateau_factor=0.0,
+                    is_grounded=is_grounded_node,
+                    help_chain=False,
+                    text_content=text_content,
+                    node_type=node_type,
+                    source_tag=source_tag,
+                    meta_data=meta_str,
+                    label=label,
+                    record_coaccess=not skip_coaccess,
+                )
 
-            from aethelnet_node.state import sync_node_physics
-            phys = sync_node_physics(
-                node_id,
-                node_type=node_type,
-                is_grounded=is_grounded_node,
-                confidence=confidence,
-                embedding=emb,
-            )
+                from aethelnet_node.state import sync_node_physics
+                phys = sync_node_physics(
+                    node_id,
+                    node_type=node_type,
+                    is_grounded=is_grounded_node,
+                    confidence=confidence,
+                    embedding=emb,
+                )
 
-            agent = get_current_agent()
-            color_info = agent_id_to_color(agent)
-            from aethelnet_node import coaccess
-            coaccess.touch([node_id], kind="write")
-            log_agent_write(agent, "MCP.write_concept", f"/nodes/{node_id}", 200)
+                agent = get_current_agent()
+                color_info = agent_id_to_color(agent)
+                log_agent_write(agent, "MCP.write_concept", f"/nodes/{node_id}", 200)
+            finally:
+                if task_tok is not None:
+                    current_task.reset(task_tok)
 
             resp = (
                 f"[SUCCESS] Concept '{node_id}' successfully saved in Aethelnet graph!\n"
@@ -371,29 +429,45 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             
             relation = str(arguments.get("relation", "associated_with")).strip().lower()
             weight = float(arguments.get("weight", 1.0) or 1.0)
+            evidence_quote = str(arguments.get("evidence_quote", "") or "").strip()
+            source_doc_id = str(arguments.get("source_doc_id", "") or "").strip()
+            is_contested = bool(arguments.get("is_contested", False))
+            task_id = str(arguments.get("task_id", "") or "").strip()
+            skip_coaccess = bool(arguments.get("skip_coaccess", False))
             edge_id = f"{source}_{relation}_{target}"
 
-            save_edge(source=source, target=target, weight=weight, label=relation)
-            save_multigraph_edge(
-                edge_id=edge_id,
-                source=source,
-                target=target,
-                relation_type=relation,
-                weight=weight
-            )
+            task_tok = current_task.set(task_id) if task_id else None
+            try:
+                save_edge(source=source, target=target, weight=weight, label=relation, record_coaccess=not skip_coaccess)
+                save_multigraph_edge(
+                    edge_id=edge_id,
+                    source=source,
+                    target=target,
+                    relation_type=relation,
+                    weight=weight,
+                    evidence_quote=evidence_quote,
+                    source_doc_id=source_doc_id,
+                    is_contested=1 if is_contested else 0,
+                    conflict_notes=evidence_quote if is_contested else "",
+                    record_coaccess=not skip_coaccess,
+                )
 
-            agent = get_current_agent()
-            from aethelnet_node import coaccess
-            coaccess.touch([source, target], kind="link")
-            log_agent_write(agent, "MCP.link_concepts", f"/edges/{source}->{target}", 200)
+                agent = get_current_agent()
+                log_agent_write(agent, "MCP.link_concepts", f"/edges/{source}->{target}", 200)
+            finally:
+                if task_tok is not None:
+                    current_task.reset(task_tok)
 
+            cflag = " [CONTESTED]" if is_contested else ""
             return {
-                "content": [{"type": "text", "text": f"[SUCCESS] Linked '{source}' --[{relation}:{weight:.1f}]--> '{target}' by agent '{agent}'."}],
+                "content": [{"type": "text", "text": f"[SUCCESS] Linked '{source}' --[{relation}:{weight:.1f}]--> '{target}'{cflag} by agent '{agent}'."}],
                 "structuredContent": {
                     "source": source,
                     "target": target,
                     "relation": relation,
                     "weight": weight,
+                    "is_contested": is_contested,
+                    "evidence_quote": evidence_quote,
                     "created_by": agent
                 }
             }
@@ -402,24 +476,44 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             query = str(arguments.get("query", "")).strip()
             if not query:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'query' is required."}]}
-            limit = int(arguments.get("limit", 10) or 10)
+            limit = max(1, min(int(arguments.get("limit", 10) or 10), 50))
+            filter_type = str(arguments.get("node_type", "") or "").strip().lower() or None
+            filter_author = str(arguments.get("created_by", "") or "").strip() or None
+            filter_tier = arguments.get("epistemic_tier")
+            filter_tier_int = int(filter_tier) if filter_tier is not None else None
+            use_assoc = bool(arguments.get("use_associations", False))
+            has_filters = any(x is not None for x in (filter_type, filter_author, filter_tier_int))
 
-            # Try associative recall first (rank-1 full payload up to 900 chars for small LLMs, claims & links included)
+            # Focused meaning/keyword recall (associative spreading disabled unless requested)
             results = []
             try:
                 from aethelnet_node.recall import recall
-                rec_res = recall(query, k=limit, include_claims=True)
+                from aethelnet_node.state import graph_instance, infer_epistemic_tier
+                pool_k = min(50, max(limit * 4, 25)) if has_filters else limit
+                rec_res = recall(query, k=pool_k, include_claims=True, use_associations=use_assoc)
                 rec_items = rec_res.get("results", [])
                 if rec_items:
                     conn = get_db_connection()
                     c = conn.cursor()
                     ids = [item["node_id"] for item in rec_items]
                     marks = ",".join("?" for _ in ids)
-                    c.execute(f"SELECT id, created_by FROM lgnn_nodes WHERE id IN ({marks})", ids)
-                    creators = {r["id"]: (r["created_by"] or "system") for r in c.fetchall()}
+                    c.execute(f"SELECT id, created_by, node_type, is_grounded, confidence FROM lgnn_nodes WHERE id IN ({marks})", ids)
+                    meta_map = {r["id"]: r for r in c.fetchall()}
                     conn.close()
                     for item in rec_items:
                         nid = item["node_id"]
+                        row_m = meta_map.get(nid)
+                        creator = (row_m["created_by"] if row_m else None) or "system"
+                        ntype = ((row_m["node_type"] if row_m else None) or "concept").lower()
+                        is_gnd = bool(row_m["is_grounded"]) if row_m else False
+                        conf = float(row_m["confidence"] or 0.5) if row_m else 0.5
+                        tier = graph_instance.get_node_physics(nid)["tier"] or infer_epistemic_tier(ntype, is_gnd, conf)
+                        if filter_type and ntype != filter_type:
+                            continue
+                        if filter_author and creator != filter_author:
+                            continue
+                        if filter_tier_int is not None and tier != filter_tier_int:
+                            continue
                         results.append({
                             "node_id": nid,
                             "label": item.get("label") or nid,
@@ -428,19 +522,24 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                             "score": float(item.get("score", 0.0)),
                             "via_association": bool(item.get("via_association", False)),
                             "claims": item.get("claims", []),
-                            "created_by": creators.get(nid, "system"),
+                            "node_type": ntype,
+                            "epistemic_tier": tier,
+                            "created_by": creator,
                         })
+                        if len(results) >= limit:
+                            break
             except Exception as e:
                 logger.warning(f"[MCP] Recall search fallback to SQL: {e}")
 
-            # Fallback to direct SQL text match if recall returned empty
-            if not results:
+            # Fallback to direct SQL text match if recall returned empty and no non-matching recall hit was discarded
+            if not results and not has_filters:
                 from aethelnet_node.recall import SNIPPET_CHARS, TOP_HIT_SNIPPET_CHARS
+                from aethelnet_node.state import infer_epistemic_tier
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute(
-                    "SELECT id, label, text_content, node_type, confidence, created_by FROM lgnn_nodes "
-                    "WHERE id LIKE ? OR label LIKE ? OR text_content LIKE ? LIMIT ?",
+                    "SELECT id, label, text_content, node_type, is_grounded, confidence, created_by FROM lgnn_nodes "
+                    "WHERE COALESCE(is_archived, 0) = 0 AND (id LIKE ? OR label LIKE ? OR text_content LIKE ?) LIMIT ?",
                     (f"%{query}%", f"%{query}%", f"%{query}%", limit)
                 )
                 for idx, r in enumerate(c.fetchall(), start=1):
@@ -454,6 +553,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                         "score": r["confidence"],
                         "via_association": False,
                         "claims": [],
+                        "node_type": (r["node_type"] or "concept").lower(),
+                        "epistemic_tier": infer_epistemic_tier(r["node_type"], bool(r["is_grounded"]), r["confidence"]),
                         "created_by": r["created_by"] or "unknown"
                     })
                 conn.close()
@@ -467,7 +568,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 if r.get("truncated"):
                     tags.append(f'truncated — call lgnn_read_node_content("{r["node_id"]}") for full text')
                 tag_str = f" [{' | '.join(tags)}]" if tags else ""
-                text_output += f"- [{r['node_id']}] {r['label']} (by {r['created_by']} [{color_info['hex']}]){tag_str}: {r['preview']}\n"
+                text_output += f"- [{r['node_id']}] {r['label']} (tier={r.get('epistemic_tier')}, by {r['created_by']} [{color_info['hex']}]){tag_str}: {r['preview']}\n"
                 for cl in r.get("claims", []):
                     cflag = " [CONTESTED]" if cl.get("contested") else ""
                     text_output += f"    claim: {cl['source']} -{cl['relation']}-> {cl['target']}{cflag}\n"
@@ -487,8 +588,71 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         elif name == "lgnn_mark_useful":
             from aethelnet_node.coaccess import touch
             node_ids = [str(n) for n in (arguments.get("node_ids") or []) if str(n).strip()]
-            links = touch(node_ids, kind="useful")
+            task_id = str(arguments.get("task_id", "") or "").strip()
+            task_tok = current_task.set(task_id) if task_id else None
+            try:
+                links = touch(node_ids, kind="useful")
+            finally:
+                if task_tok is not None:
+                    current_task.reset(task_tok)
             return {"content": [{"type": "text", "text": f"Noted {len(node_ids)} concepts as used together ({links} new links)."}]}
+
+        elif name == "lgnn_archive_concept":
+            nid = str(arguments.get("node_id", "")).strip()
+            if not nid:
+                return {"isError": True, "content": [{"type": "text", "text": "Argument 'node_id' is required."}]}
+            reason = str(arguments.get("reason", "") or "").strip()
+            superseded_by = str(arguments.get("superseded_by", "") or "").strip()
+            agent = get_current_agent()
+
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT meta_data FROM lgnn_nodes WHERE id = ?", (nid,))
+            row = c.fetchone()
+            if not row:
+                conn.close()
+                return {"isError": True, "content": [{"type": "text", "text": f"Concept '{nid}' does not exist."}]}
+            try:
+                meta = json.loads(row["meta_data"] or "{}")
+                if not isinstance(meta, dict):
+                    meta = {}
+            except ValueError:
+                meta = {}
+            meta["archived_by"] = agent
+            if reason:
+                meta["archived_reason"] = reason
+            if superseded_by:
+                meta["superseded_by"] = superseded_by
+            c.execute(
+                "UPDATE lgnn_nodes SET is_archived = 1, updated_by = ?, meta_data = ?, last_updated = CURRENT_TIMESTAMP WHERE id = ?",
+                (agent, json.dumps(meta), nid),
+            )
+            conn.commit()
+            conn.close()
+
+            from aethelnet_node.state import graph_instance
+            graph_instance.remove_node(nid)
+
+            if superseded_by:
+                save_multigraph_edge(
+                    edge_id=f"{nid}_superseded_by_{superseded_by}",
+                    source=nid,
+                    target=superseded_by,
+                    relation_type="superseded_by",
+                    weight=1.0,
+                    evidence_quote=reason,
+                    source_doc_id="archive_concept",
+                    record_coaccess=False,
+                )
+
+            log_agent_write(agent, "MCP.archive_concept", f"/nodes/{nid}", 200)
+            msg = f"[SUCCESS] Soft-archived '{nid}' (by {agent})"
+            if superseded_by:
+                msg += f" -> superseded by '{superseded_by}'"
+            return {
+                "content": [{"type": "text", "text": msg + "."}],
+                "structuredContent": {"node_id": nid, "archived": True, "superseded_by": superseded_by or None, "by": agent},
+            }
 
         elif name == "lgnn_execute_cmd":
             try:

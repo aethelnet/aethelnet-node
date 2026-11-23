@@ -477,7 +477,8 @@ def save_node(
     meta_data: Optional[str] = None,
     app_id: str = "general",
     entity_type: str = "concept",
-    label: str = ""
+    label: str = "",
+    record_coaccess: bool = True
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -516,7 +517,8 @@ def save_node(
     ))
     conn.commit()
     conn.close()
-    _touch([node_id])
+    if record_coaccess:
+        _touch([node_id])
 
 def delete_node(node_id: str):
     conn = get_db_connection()
@@ -603,7 +605,7 @@ def mark_observation_done(job_id: int):
     conn.close()
 
 
-def save_edge(source: str, target: str, weight: float, label: Optional[str] = None):
+def save_edge(source: str, target: str, weight: float, label: Optional[str] = None, record_coaccess: bool = True):
     # Enforce alphabetical ordering of source/target to prevent duplicate bidirectional keys
     u, v = sorted([source, target])
     conn = get_db_connection()
@@ -618,7 +620,8 @@ def save_edge(source: str, target: str, weight: float, label: Optional[str] = No
     """, (u, v, weight, agent, agent))
     conn.commit()
     conn.close()
-    _touch([u, v])
+    if record_coaccess:
+        _touch([u, v])
 
 def delete_edge(source: str, target: str):
     u, v = sorted([source, target])
@@ -642,7 +645,8 @@ def save_multigraph_edge(
     evidence_quote: str = "",
     source_doc_id: str = "",
     is_contested: int = 0,
-    conflict_notes: str = ""
+    conflict_notes: str = "",
+    record_coaccess: bool = True
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -669,7 +673,8 @@ def save_multigraph_edge(
           is_contested, conflict_notes, agent, agent))
     conn.commit()
     conn.close()
-    _touch([source, target])
+    if record_coaccess:
+        _touch([source, target])
 
 def get_multigraph_edges(
     app_id: Optional[str] = None,

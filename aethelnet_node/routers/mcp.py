@@ -26,6 +26,7 @@ HTTP_EXPOSED_TOOLS = {
     "lgnn_write_concept",
     "lgnn_link_concepts",
     "lgnn_search_concepts",
+    "lgnn_archive_concept",
 }
 
 

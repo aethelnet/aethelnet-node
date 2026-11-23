@@ -212,3 +212,116 @@ def test_search_concepts_preserves_full_top_hit_without_100_char_clip():
         assert "lgnn_read_node_content" in res_long["content"][0]["text"]
     finally:
         current_agent.reset(token)
+
+
+def test_read_node_content_preserves_edge_direction_and_contested():
+    token = current_agent.set("direction_tester")
+    try:
+        call_mcp_tool("lgnn_write_concept", {"node_id": "dir_parent", "label": "Parent Node", "skip_coaccess": True})
+        call_mcp_tool("lgnn_write_concept", {"node_id": "dir_child", "label": "Child Node", "skip_coaccess": True})
+        call_mcp_tool("lgnn_link_concepts", {
+            "source": "dir_parent",
+            "target": "dir_child",
+            "relation": "extended_by",
+            "evidence_quote": "Verified conflict test quote.",
+            "is_contested": True,
+            "skip_coaccess": True,
+        })
+
+        parent_card = call_mcp_tool("lgnn_read_node_content", {"node_id": "dir_parent"})
+        child_card = call_mcp_tool("lgnn_read_node_content", {"node_id": "dir_child"})
+
+        assert "--[extended_by:1.0]-->" in parent_card["content"][0]["text"]
+        assert "<--[extended_by:1.0]--" in child_card["content"][0]["text"]
+        assert "[CONTESTED]" in child_card["content"][0]["text"]
+        assert child_card["structuredContent"]["edges"][0]["direction"] == "in"
+        assert child_card["structuredContent"]["edges"][0]["contested"] is True
+    finally:
+        current_agent.reset(token)
+
+
+def test_query_graph_respects_limit_past_15():
+    token = current_agent.set("limit_tester")
+    try:
+        for i in range(18):
+            call_mcp_tool("lgnn_write_concept", {
+                "node_id": f"limit_node_{i:02d}",
+                "label": f"Limit Node {i}",
+                "skip_coaccess": True,
+            })
+        res = call_mcp_tool("lgnn_query_graph", {"limit": 25})
+        shown_lines = [ln for ln in res["content"][0]["text"].splitlines() if ln.strip().startswith("* [")]
+        assert len(shown_lines) >= 18
+        assert f"Showing first {len(res['structuredContent']['nodes'])} nodes:" in res["content"][0]["text"]
+    finally:
+        current_agent.reset(token)
+
+
+def test_search_concepts_filters_by_type_creator_and_tier():
+    tok_a = current_agent.set("alice_author")
+    try:
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "flt_alice_inv",
+            "label": "FilterSharedKeyword Rule",
+            "text_content": "filtersharedkeyword99 canonical invariant rule",
+            "node_type": "invariant",
+            "confidence": 0.99,
+            "skip_coaccess": True,
+        })
+    finally:
+        current_agent.reset(tok_a)
+
+    tok_b = current_agent.set("bob_author")
+    try:
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "flt_bob_hyp",
+            "label": "FilterSharedKeyword Guess",
+            "text_content": "filtersharedkeyword99 speculative hypothesis note",
+            "node_type": "hypothesis",
+            "confidence": 0.45,
+            "skip_coaccess": True,
+        })
+        res_inv = call_mcp_tool("lgnn_search_concepts", {
+            "query": "filtersharedkeyword99",
+            "node_type": "invariant",
+            "created_by": "alice_author",
+            "epistemic_tier": 1,
+        })
+        ids_inv = [r["node_id"] for r in res_inv["structuredContent"]]
+        assert ids_inv == ["flt_alice_inv"]
+    finally:
+        current_agent.reset(tok_b)
+
+
+def test_skip_coaccess_prevents_bulk_cliques_and_archive_hides_node():
+    from aethelnet_node import coaccess
+    from aethelnet_node.recall import recall
+
+    token = current_agent.set("clique_guard")
+    try:
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "bulk_iso_alpha",
+            "text_content": "bulkisolated991 first topic",
+            "skip_coaccess": True,
+        })
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "bulk_iso_beta",
+            "text_content": "bulkisolated991 second unrelated topic",
+            "skip_coaccess": True,
+        })
+        assert coaccess.edges_among(["bulk_iso_alpha", "bulk_iso_beta"]) == []
+
+        arch = call_mcp_tool("lgnn_archive_concept", {
+            "node_id": "bulk_iso_alpha",
+            "reason": "Obsolete draft",
+            "superseded_by": "bulk_iso_beta",
+        })
+        assert not arch.get("isError")
+        rec_ids = [r["node_id"] for r in recall("bulkisolated991", k=5)["results"]]
+        assert "bulk_iso_alpha" not in rec_ids
+        assert "bulk_iso_beta" in rec_ids
+
+        card = call_mcp_tool("lgnn_read_node_content", {"node_id": "bulk_iso_beta"})
+        assert any(e["relation"] == "superseded_by" and e["direction"] == "in" for e in card["structuredContent"]["edges"])
+    finally:
+        current_agent.reset(token)

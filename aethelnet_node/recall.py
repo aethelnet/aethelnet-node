@@ -218,7 +218,13 @@ def _claims_for(node_ids: List[str], per_node: int = 3) -> Dict[str, List[Dict[s
     return dict(claims)
 
 
-def recall(query: str, k: int = 8, use_popularity: bool = False, include_claims: bool = True) -> Dict[str, Any]:
+def recall(
+    query: str,
+    k: int = 8,
+    use_popularity: bool = False,
+    include_claims: bool = True,
+    use_associations: bool = True,
+) -> Dict[str, Any]:
     from aethelnet_node import coaccess
 
     k = max(1, min(int(k), 50))
@@ -244,7 +250,7 @@ def recall(query: str, k: int = 8, use_popularity: bool = False, include_claims:
     if hybrid.max() <= 0:
         return result
     id_to_idx = {node_id: i for i, node_id in enumerate(index.ids)}
-    edges = coaccess.edges_among(index.ids)
+    edges = coaccess.edges_among(index.ids) if use_associations else []
     result["association_edges"] = len(edges)
     final = _ppr(hybrid, edges, id_to_idx) if edges else hybrid
 
