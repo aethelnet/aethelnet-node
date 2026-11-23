@@ -188,6 +188,20 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN created_at TIMESTAMP")
+        cursor.execute("UPDATE lgnn_nodes SET created_at = last_updated WHERE created_at IS NULL")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN created_model TEXT DEFAULT ''")
+        cursor.execute("ALTER TABLE lgnn_nodes ADD COLUMN updated_model TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
 
     # Create Commits Table for Git-like version tracking of snapshots
     cursor.execute("""
@@ -478,21 +492,27 @@ def save_node(
     app_id: str = "general",
     entity_type: str = "concept",
     label: str = "",
-    record_coaccess: bool = True
+    record_coaccess: bool = True,
+    model_id: str = ""
 ):
     conn = get_db_connection()
     cursor = conn.cursor()
     emb_bytes = serialize_tensor(embedding)
     agent = get_current_agent()
+    effective_model = (model_id or os.getenv("AETHELNET_MODEL_ID", "")).strip()
     cursor.execute("""
     INSERT INTO lgnn_nodes (
         id, embedding, text_content, mean_activation, confidence, plateau_factor,
         is_grounded, help_chain, is_archived, source_tag, is_quarantined, node_type,
-        meta_data, app_id, entity_type, label, created_by, updated_by, last_updated
+        meta_data, app_id, entity_type, label, created_by, updated_by,
+        created_model, updated_model, created_at, last_updated
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     ON CONFLICT(id) DO UPDATE SET
         updated_by = excluded.updated_by,
+        created_at = COALESCE(lgnn_nodes.created_at, CURRENT_TIMESTAMP),
+        created_model = CASE WHEN COALESCE(lgnn_nodes.created_model, '') != '' THEN lgnn_nodes.created_model ELSE excluded.created_model END,
+        updated_model = CASE WHEN excluded.updated_model != '' THEN excluded.updated_model ELSE lgnn_nodes.updated_model END,
         embedding = excluded.embedding,
         text_content = CASE WHEN excluded.text_content != '' THEN excluded.text_content ELSE lgnn_nodes.text_content END,
         mean_activation = excluded.mean_activation,
@@ -513,7 +533,7 @@ def save_node(
         node_id, emb_bytes, text_content, mean_activation, confidence, plateau_factor,
         1 if is_grounded else 0, 1 if help_chain else 0, 1 if is_archived else 0,
         source_tag, 1 if is_quarantined else 0, node_type, meta_data, app_id, entity_type, label,
-        agent, agent
+        agent, agent, effective_model, effective_model
     ))
     conn.commit()
     conn.close()

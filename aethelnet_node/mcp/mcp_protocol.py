@@ -60,6 +60,7 @@ def get_mcp_tools() -> List[Dict[str, Any]]:
                     "confidence": {"type": "number", "description": "Confidence score between 0.0 and 1.0 (default: 0.85)."},
                     "source_tag": {"type": "string", "description": "Source tag: 'agent_inference', 'human_note', 'code_audit' (default: 'agent_inference')."},
                     "meta_data": {"type": "object", "description": "Optional arbitrary JSON metadata dictionary."},
+                    "model_id": {"type": "string", "description": "Optional authoring LLM model identifier (e.g. 'gemini-hydroge-v1', 'gemma4:12b-it-qat')."},
                     "task_id": {"type": "string", "description": "Optional task boundary ID to scope Hebbian co-access edges strictly to related concepts."},
                     "skip_coaccess": {"type": "boolean", "description": "Set true during bulk seeding or unrelated housekeeping so co-access cliques are not formed."}
                 },
@@ -192,13 +193,15 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             from aethelnet_node.state import graph_instance, infer_epistemic_tier
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT id, created_by, label, node_type, is_grounded, confidence FROM lgnn_nodes")
+            c.execute("SELECT id, created_by, created_at, created_model, label, node_type, is_grounded, confidence FROM lgnn_nodes")
             author_map = {row["id"]: row for row in c.fetchall()}
             conn.close()
 
             for nid, m in list(metrics.items())[:limit]:
                 author_info = author_map.get(nid, {})
                 creator = author_info["created_by"] if author_info and "created_by" in author_info.keys() else "system"
+                created_at = author_info["created_at"] if author_info and "created_at" in author_info.keys() else None
+                created_model = (author_info["created_model"] or "") if author_info and "created_model" in author_info.keys() else ""
                 color_info = agent_id_to_color(creator)
                 ntype = author_info["node_type"] if author_info and "node_type" in author_info.keys() else "concept"
                 is_gnd = bool(author_info["is_grounded"]) if author_info and "is_grounded" in author_info.keys() else False
@@ -212,6 +215,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "confidence": conf,
                     "plateau_factor": m.get("plateau_factor", 0.0),
                     "created_by": creator,
+                    "created_at": created_at,
+                    "created_model": created_model or None,
                     "color": color_info["hex"],
                     "node_type": ntype,
                     "epistemic_tier": tier,
@@ -225,7 +230,9 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 f"- Showing first {len(nodes_summary)} nodes:\n"
             )
             for n in nodes_summary:
-                summary_text += f"  * [{n['id']}] ({n['node_type']}, tier={n['epistemic_tier']}) by {n['created_by']} [{n['color']}]: confidence {n['confidence']:.2f}\n"
+                m_tag = f" [{n['created_model']}]" if n["created_model"] else ""
+                d_tag = f" @ {str(n['created_at'])[:10]}" if n["created_at"] else ""
+                summary_text += f"  * [{n['id']}] ({n['node_type']}, tier={n['epistemic_tier']}) by {n['created_by']}{m_tag}{d_tag} [{n['color']}]: confidence {n['confidence']:.2f}\n"
 
             return {
                 "content": [{"type": "text", "text": summary_text}],
@@ -245,7 +252,11 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             text = get_node_text(nid)
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT id, label, node_type, is_grounded, confidence, created_by, updated_by, last_updated, meta_data FROM lgnn_nodes WHERE id = ?", (nid,))
+            c.execute(
+                "SELECT id, label, node_type, is_grounded, confidence, created_by, updated_by, "
+                "created_at, last_updated, created_model, updated_model, meta_data FROM lgnn_nodes WHERE id = ?",
+                (nid,),
+            )
             row = c.fetchone()
             
             # Fetch bridges connected to this node preserving exact direction & contested status
@@ -293,6 +304,10 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             coaccess_links.sort(key=lambda x: -x["weight"])
 
             creator = row["created_by"] or "unknown"
+            updater = row["updated_by"] or creator
+            created_at = row["created_at"] or row["last_updated"]
+            created_model = (row["created_model"] or "").strip()
+            updated_model = (row["updated_model"] or "").strip()
             color_info = agent_id_to_color(creator)
             phys = graph_instance.get_node_physics(nid)
             tier = phys["tier"] or infer_epistemic_tier(
@@ -300,11 +315,13 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             )
             tau = graph_instance.get_effective_tau(nid)
             tau_str = f" | **τ_eff**: `{tau:.3f}`" if tau is not None else ""
+            c_mod_str = f" [{created_model}]" if created_model else ""
+            u_mod_str = f" [{updated_model}]" if updated_model else ""
             
             card = (
                 f"# Concept: {row['label'] or row['id']}\n"
                 f"**ID**: `{row['id']}` | **Type**: `{row['node_type']}` | **Tier**: `{tier}`{tau_str} | **Confidence**: {row['confidence']:.2f}\n"
-                f"**Author**: `{creator}` ({color_info['hex']}) | **Last Updated**: {row['last_updated']}\n\n"
+                f"**Created**: `{created_at}` by `{creator}`{c_mod_str} ({color_info['hex']}) | **Updated**: `{row['last_updated']}` by `{updater}`{u_mod_str}\n\n"
                 f"## Content\n"
                 f"{text or '_No text content recorded._'}\n\n"
                 f"## Connected Bridges ({len(edges)})\n"
@@ -333,6 +350,11 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "effective_tau": round(tau, 4) if tau is not None else None,
                     "confidence": row["confidence"],
                     "created_by": creator,
+                    "updated_by": updater,
+                    "created_at": created_at,
+                    "last_updated": row["last_updated"],
+                    "created_model": created_model or None,
+                    "updated_model": updated_model or None,
                     "color": color_info,
                     "text_content": text,
                     "edges": edges,
@@ -352,6 +374,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             source_tag = str(arguments.get("source_tag", "agent_inference")).strip()
             meta_data = arguments.get("meta_data", {})
             meta_str = json.dumps(meta_data) if isinstance(meta_data, dict) else str(meta_data or "{}")
+            model_id = str(arguments.get("model_id", "") or "").strip()
             task_id = str(arguments.get("task_id", "") or "").strip()
             skip_coaccess = bool(arguments.get("skip_coaccess", False))
 
@@ -383,6 +406,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     meta_data=meta_str,
                     label=label,
                     record_coaccess=not skip_coaccess,
+                    model_id=model_id,
                 )
 
                 from aethelnet_node.state import sync_node_physics
@@ -401,11 +425,12 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 if task_tok is not None:
                     current_task.reset(task_tok)
 
+            mod_tag = f" [{model_id}]" if model_id else ""
             resp = (
                 f"[SUCCESS] Concept '{node_id}' successfully saved in Aethelnet graph!\n"
                 f"- Label: {label}\n"
                 f"- Type: {node_type} (Tier {phys.get('tier')}) | Confidence: {confidence:.2f}\n"
-                f"- Provenance Author: {agent} (Color: {color_info['hex']})\n"
+                f"- Provenance Author: {agent}{mod_tag} (Color: {color_info['hex']})\n"
                 f"- Embedding: 768-dim neural representation indexed."
             )
             return {
@@ -417,6 +442,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "epistemic_tier": phys.get("tier"),
                     "confidence": confidence,
                     "created_by": agent,
+                    "model_id": model_id or None,
                     "color": color_info
                 }
             }
@@ -497,13 +523,15 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     c = conn.cursor()
                     ids = [item["node_id"] for item in rec_items]
                     marks = ",".join("?" for _ in ids)
-                    c.execute(f"SELECT id, created_by, node_type, is_grounded, confidence FROM lgnn_nodes WHERE id IN ({marks})", ids)
+                    c.execute(f"SELECT id, created_by, created_at, created_model, node_type, is_grounded, confidence FROM lgnn_nodes WHERE id IN ({marks})", ids)
                     meta_map = {r["id"]: r for r in c.fetchall()}
                     conn.close()
                     for item in rec_items:
                         nid = item["node_id"]
                         row_m = meta_map.get(nid)
                         creator = (row_m["created_by"] if row_m else None) or "system"
+                        created_at = row_m["created_at"] if row_m else None
+                        created_model = ((row_m["created_model"] if row_m else None) or "").strip()
                         ntype = ((row_m["node_type"] if row_m else None) or "concept").lower()
                         is_gnd = bool(row_m["is_grounded"]) if row_m else False
                         conf = float(row_m["confidence"] or 0.5) if row_m else 0.5
@@ -525,6 +553,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                             "node_type": ntype,
                             "epistemic_tier": tier,
                             "created_by": creator,
+                            "created_at": created_at,
+                            "created_model": created_model or None,
                         })
                         if len(results) >= limit:
                             break
@@ -538,7 +568,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute(
-                    "SELECT id, label, text_content, node_type, is_grounded, confidence, created_by FROM lgnn_nodes "
+                    "SELECT id, label, text_content, node_type, is_grounded, confidence, created_by, created_at, created_model FROM lgnn_nodes "
                     "WHERE COALESCE(is_archived, 0) = 0 AND (id LIKE ? OR label LIKE ? OR text_content LIKE ?) LIMIT ?",
                     (f"%{query}%", f"%{query}%", f"%{query}%", limit)
                 )
@@ -555,7 +585,9 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                         "claims": [],
                         "node_type": (r["node_type"] or "concept").lower(),
                         "epistemic_tier": infer_epistemic_tier(r["node_type"], bool(r["is_grounded"]), r["confidence"]),
-                        "created_by": r["created_by"] or "unknown"
+                        "created_by": r["created_by"] or "unknown",
+                        "created_at": r["created_at"],
+                        "created_model": (r["created_model"] or "").strip() or None,
                     })
                 conn.close()
 
@@ -568,7 +600,9 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 if r.get("truncated"):
                     tags.append(f'truncated — call lgnn_read_node_content("{r["node_id"]}") for full text')
                 tag_str = f" [{' | '.join(tags)}]" if tags else ""
-                text_output += f"- [{r['node_id']}] {r['label']} (tier={r.get('epistemic_tier')}, by {r['created_by']} [{color_info['hex']}]){tag_str}: {r['preview']}\n"
+                m_tag = f" [{r['created_model']}]" if r.get("created_model") else ""
+                d_tag = f" @ {str(r['created_at'])[:10]}" if r.get("created_at") else ""
+                text_output += f"- [{r['node_id']}] {r['label']} (tier={r.get('epistemic_tier')}, by {r['created_by']}{m_tag}{d_tag} [{color_info['hex']}]){tag_str}: {r['preview']}\n"
                 for cl in r.get("claims", []):
                     cflag = " [CONTESTED]" if cl.get("contested") else ""
                     text_output += f"    claim: {cl['source']} -{cl['relation']}-> {cl['target']}{cflag}\n"

@@ -325,3 +325,47 @@ def test_skip_coaccess_prevents_bulk_cliques_and_archive_hides_node():
         assert any(e["relation"] == "superseded_by" and e["direction"] == "in" for e in card["structuredContent"]["edges"])
     finally:
         current_agent.reset(token)
+
+
+def test_created_at_and_model_provenance_preserved_on_update():
+    tok_a = current_agent.set("gemini_a")
+    try:
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "prov_model_node",
+            "label": "Hydroge Model Finding",
+            "text_content": "provhydrogev188 initial observation by gemini hydroge v1",
+            "model_id": "gemini-hydroge-v1",
+            "skip_coaccess": True,
+        })
+        first_card = call_mcp_tool("lgnn_read_node_content", {"node_id": "prov_model_node"})
+        sc1 = first_card["structuredContent"]
+        assert sc1["created_by"] == "gemini_a"
+        assert sc1["created_model"] == "gemini-hydroge-v1"
+        assert sc1["created_at"]
+        orig_created_at = sc1["created_at"]
+        assert "gemini-hydroge-v1" in first_card["content"][0]["text"]
+    finally:
+        current_agent.reset(tok_a)
+
+    tok_b = current_agent.set("gemini_b")
+    try:
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "prov_model_node",
+            "text_content": "provhydrogev188 refined observation by newer gemini variant",
+            "model_id": "gemini-next-v2",
+            "skip_coaccess": True,
+        })
+        second_card = call_mcp_tool("lgnn_read_node_content", {"node_id": "prov_model_node"})
+        sc2 = second_card["structuredContent"]
+        assert sc2["created_by"] == "gemini_a"
+        assert sc2["created_at"] == orig_created_at
+        assert sc2["created_model"] == "gemini-hydroge-v1"
+        assert sc2["updated_by"] == "gemini_b"
+        assert sc2["updated_model"] == "gemini-next-v2"
+
+        srch = call_mcp_tool("lgnn_search_concepts", {"query": "provhydrogev188"})
+        hit = next(r for r in srch["structuredContent"] if r["node_id"] == "prov_model_node")
+        assert hit["created_model"] == "gemini-hydroge-v1"
+        assert hit["created_at"] == orig_created_at
+    finally:
+        current_agent.reset(tok_b)
