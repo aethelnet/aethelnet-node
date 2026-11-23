@@ -215,10 +215,26 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             # Fetch bridges connected to this node
             c.execute("SELECT target, relation_type, weight FROM lgnn_multigraph_edges WHERE source = ? UNION SELECT source, relation_type, weight FROM lgnn_multigraph_edges WHERE target = ?", (nid, nid))
             edges = [{"node": r[0], "relation": r[1], "weight": r[2]} for r in c.fetchall()]
+            c.execute(
+                "SELECT node_a, node_b, weight, updated_at FROM agent_coaccess_edges WHERE node_a = ? OR node_b = ?",
+                (nid, nid),
+            )
+            coaccess_rows = c.fetchall()
             conn.close()
 
             if not row:
                 return {"content": [{"type": "text", "text": f"Concept '{nid}' is empty or does not exist."}]}
+
+            import time as _time
+            from aethelnet_node.coaccess import DEFAULT_HALF_LIFE_DAYS, _decay_factor
+            now_ts = _time.time()
+            coaccess_links = []
+            for cr in coaccess_rows:
+                other = cr["node_b"] if cr["node_a"] == nid else cr["node_a"]
+                eff_w = float(cr["weight"]) * _decay_factor(cr["updated_at"], now_ts, DEFAULT_HALF_LIFE_DAYS)
+                if eff_w > 1e-6:
+                    coaccess_links.append({"node": other, "weight": round(eff_w, 4)})
+            coaccess_links.sort(key=lambda x: -x["weight"])
 
             creator = row["created_by"] or "unknown"
             color_info = agent_id_to_color(creator)
@@ -233,6 +249,10 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             )
             for e in edges[:10]:
                 card += f"- `--[{e['relation']}:{e['weight']:.1f}]-->` `{e['node']}`\n"
+            if coaccess_links:
+                card += f"\n## Learned Hebbian Co-Access ({len(coaccess_links)})\n"
+                for cl in coaccess_links[:10]:
+                    card += f"- `<--[coaccess:{cl['weight']:.2f}]-->` `{cl['node']}`\n"
 
             return {
                 "content": [{"type": "text", "text": card}],
@@ -244,7 +264,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "created_by": creator,
                     "color": color_info,
                     "text_content": text,
-                    "edges": edges
+                    "edges": edges,
+                    "coaccess": coaccess_links,
                 }
             }
 
@@ -289,6 +310,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
             agent = get_current_agent()
             color_info = agent_id_to_color(agent)
+            from aethelnet_node import coaccess
+            coaccess.touch([node_id], kind="write")
             log_agent_write(agent, "MCP.write_concept", f"/nodes/{node_id}", 200)
 
             resp = (
@@ -330,6 +353,8 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             )
 
             agent = get_current_agent()
+            from aethelnet_node import coaccess
+            coaccess.touch([source, target], kind="link")
             log_agent_write(agent, "MCP.link_concepts", f"/edges/{source}->{target}", 200)
 
             return {
@@ -353,15 +378,26 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             results = []
             try:
                 from aethelnet_node.recall import recall
-                rec_res = recall(query, k=limit)
-                for item in rec_res.get("concepts", []):
-                    results.append({
-                        "node_id": item["node_id"],
-                        "label": item.get("label", item["node_id"]),
-                        "preview": item.get("text_preview", ""),
-                        "score": item.get("final_score", 0.0),
-                        "created_by": item.get("created_by", "system")
-                    })
+                rec_res = recall(query, k=limit, include_claims=False)
+                rec_items = rec_res.get("results", [])
+                if rec_items:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    ids = [item["node_id"] for item in rec_items]
+                    marks = ",".join("?" for _ in ids)
+                    c.execute(f"SELECT id, created_by FROM lgnn_nodes WHERE id IN ({marks})", ids)
+                    creators = {r["id"]: (r["created_by"] or "system") for r in c.fetchall()}
+                    conn.close()
+                    for item in rec_items:
+                        nid = item["node_id"]
+                        results.append({
+                            "node_id": nid,
+                            "label": item.get("label") or nid,
+                            "preview": item.get("snippet", ""),
+                            "score": float(item.get("score", 0.0)),
+                            "via_association": bool(item.get("via_association", False)),
+                            "created_by": creators.get(nid, "system"),
+                        })
             except Exception as e:
                 logger.warning(f"[MCP] Recall search fallback to SQL: {e}")
 
