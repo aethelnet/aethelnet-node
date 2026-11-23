@@ -29,6 +29,7 @@ TELEPORT = 0.5
 PPR_ITERATIONS = 40
 MAX_TEXT_CHARS = 4000
 SNIPPET_CHARS = 280
+TOP_HIT_SNIPPET_CHARS = 900
 
 STOP = set("""a an and are as at be by for from has have if in into is it its of on or that the this to was were
 will with not no self def return import const let var function class true false none null new else""".split())
@@ -255,11 +256,14 @@ def recall(query: str, k: int = 8, use_popularity: bool = False, include_claims:
     claims = _claims_for([index.ids[i] for i in picked]) if include_claims else {}
     for rank, i in enumerate(picked, start=1):
         node_id = index.ids[i]
+        clean_text = re.sub(r"\s+", " ", index.texts[i]).strip()
+        char_limit = TOP_HIT_SNIPPET_CHARS if rank == 1 else SNIPPET_CHARS
         result["results"].append({
             "rank": rank,
             "node_id": node_id,
             "label": index.labels[i],
-            "snippet": re.sub(r"\s+", " ", index.texts[i])[:SNIPPET_CHARS],
+            "snippet": clean_text[:char_limit],
+            "truncated": len(clean_text) > char_limit,
             "score": float(final[i]),
             "lexical_rank": lexical_rank.get(i),
             "dense_rank": dense_rank.get(i),
@@ -284,7 +288,8 @@ def format_recall(result: Dict[str, Any]) -> str:
             why.append(f"meaning #{r['dense_rank']}")
         if r["via_association"]:
             why.append("used together with the top hits")
-        lines.append(f"{r['rank']}. [{r['node_id']}] {r['snippet']}" + (f"  ({', '.join(why)})" if why else ""))
+        trunc_note = f' [truncated — call lgnn_read_node_content("{r["node_id"]}") for full text]' if r.get("truncated") else ""
+        lines.append(f"{r['rank']}. [{r['node_id']}] {r['snippet']}{trunc_note}" + (f"  ({', '.join(why)})" if why else ""))
         for c in r["claims"]:
             flag = " [CONTESTED]" if c["contested"] else ""
             evidence = f' "{c["evidence"]}"' if c["evidence"] else ""

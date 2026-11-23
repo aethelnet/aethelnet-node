@@ -374,11 +374,11 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 return {"isError": True, "content": [{"type": "text", "text": "Argument 'query' is required."}]}
             limit = int(arguments.get("limit", 10) or 10)
 
-            # Try associative recall first
+            # Try associative recall first (rank-1 full payload up to 900 chars for small LLMs, claims & links included)
             results = []
             try:
                 from aethelnet_node.recall import recall
-                rec_res = recall(query, k=limit, include_claims=False)
+                rec_res = recall(query, k=limit, include_claims=True)
                 rec_items = rec_res.get("results", [])
                 if rec_items:
                     conn = get_db_connection()
@@ -394,8 +394,10 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                             "node_id": nid,
                             "label": item.get("label") or nid,
                             "preview": item.get("snippet", ""),
+                            "truncated": bool(item.get("truncated", False)),
                             "score": float(item.get("score", 0.0)),
                             "via_association": bool(item.get("via_association", False)),
+                            "claims": item.get("claims", []),
                             "created_by": creators.get(nid, "system"),
                         })
             except Exception as e:
@@ -403,6 +405,7 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
             # Fallback to direct SQL text match if recall returned empty
             if not results:
+                from aethelnet_node.recall import SNIPPET_CHARS, TOP_HIT_SNIPPET_CHARS
                 conn = get_db_connection()
                 c = conn.cursor()
                 c.execute(
@@ -410,12 +413,17 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE id LIKE ? OR label LIKE ? OR text_content LIKE ? LIMIT ?",
                     (f"%{query}%", f"%{query}%", f"%{query}%", limit)
                 )
-                for r in c.fetchall():
+                for idx, r in enumerate(c.fetchall(), start=1):
+                    raw_txt = (r["text_content"] or "").strip()
+                    char_limit = TOP_HIT_SNIPPET_CHARS if idx == 1 else SNIPPET_CHARS
                     results.append({
                         "node_id": r["id"],
                         "label": r["label"] or r["id"],
-                        "preview": (r["text_content"] or "")[:150],
+                        "preview": raw_txt[:char_limit],
+                        "truncated": len(raw_txt) > char_limit,
                         "score": r["confidence"],
+                        "via_association": False,
+                        "claims": [],
                         "created_by": r["created_by"] or "unknown"
                     })
                 conn.close()
@@ -423,7 +431,16 @@ def call_mcp_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             text_output = f"Aethelnet Search Results for '{query}' ({len(results)} matches):\n"
             for r in results:
                 color_info = agent_id_to_color(r["created_by"])
-                text_output += f"- [{r['node_id']}] {r['label']} (by {r['created_by']} [{color_info['hex']}]): {r['preview'][:100]}...\n"
+                tags = []
+                if r.get("via_association"):
+                    tags.append("via association")
+                if r.get("truncated"):
+                    tags.append(f'truncated — call lgnn_read_node_content("{r["node_id"]}") for full text')
+                tag_str = f" [{' | '.join(tags)}]" if tags else ""
+                text_output += f"- [{r['node_id']}] {r['label']} (by {r['created_by']} [{color_info['hex']}]){tag_str}: {r['preview']}\n"
+                for cl in r.get("claims", []):
+                    cflag = " [CONTESTED]" if cl.get("contested") else ""
+                    text_output += f"    claim: {cl['source']} -{cl['relation']}-> {cl['target']}{cflag}\n"
 
             return {
                 "content": [{"type": "text", "text": text_output}],

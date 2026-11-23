@@ -18,7 +18,8 @@ init_db()
 logger = logging.getLogger("Aethelnet.Node.Synthesis")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:latest")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b-it-qat")
+OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "768") or 768)
 
 class SynthesisEngine:
     """
@@ -164,10 +165,11 @@ class SynthesisEngine:
                         "model": self.model,
                         "prompt": prompt,
                         "stream": False,
+                        "think": False,
                         "options": {
                             "temperature": 0.2,
                             "top_p": 0.9,
-                            "num_predict": 300
+                            "num_predict": OLLAMA_NUM_PREDICT
                         }
                     }
                 )
@@ -175,10 +177,10 @@ class SynthesisEngine:
                     data = res.json()
                     return data.get("response", "").strip()
                 else:
-                    logger.warn(f"[Synthesis LLM] Ollama returned status {res.status_code}: {res.text}")
+                    logger.warning(f"[Synthesis LLM] Ollama returned status {res.status_code}: {res.text}")
                     return None
         except Exception as e:
-            logger.warn(f"[Synthesis LLM] Failed to query Ollama ({e}). Using heuristic fallback.")
+            logger.warning(f"[Synthesis LLM] Failed to query Ollama ({e}). Using heuristic fallback.")
             return None
 
 # Global Singleton

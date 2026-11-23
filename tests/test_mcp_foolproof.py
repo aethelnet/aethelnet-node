@@ -178,3 +178,37 @@ def test_mcp_stdio_protocol_handshake_and_ping(monkeypatch, capsys):
     assert lines[0]["result"]["protocolVersion"] == "2025-03-26"
     assert lines[1]["result"] == {}
     assert any(t["name"] == "lgnn_topological_recovery" for t in lines[2]["result"]["tools"])
+
+
+def test_search_concepts_preserves_full_top_hit_without_100_char_clip():
+    token = current_agent.set("small_llm_tester")
+    try:
+        medium_body = (
+            "Detailed Silverblue environment note explaining legacy venv relocation background "
+            "with extra diagnostic context padding beyond one hundred characters so that "
+            "the actual exact command sits late: uv run --no-project --python /usr/bin/python3.14 --with pytest"
+        )
+        assert 200 < len(medium_body) < 400
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "mcp_progressive_medium",
+            "label": "Medium Invariant Progressive Density",
+            "text_content": medium_body,
+        })
+        res_med = call_mcp_tool("lgnn_search_concepts", {"query": "Medium Invariant Progressive Density", "limit": 3})
+        assert not res_med.get("isError")
+        assert "--with pytest" in res_med["content"][0]["text"]
+        top_med = next(r for r in res_med["structuredContent"] if r["node_id"] == "mcp_progressive_medium")
+        assert top_med["truncated"] is False
+
+        long_body = "Long architectural specification uniquetoken9942 " + ("clause_detail " * 90)
+        call_mcp_tool("lgnn_write_concept", {
+            "node_id": "mcp_progressive_long",
+            "label": "Long Architecture Spec uniquetoken9942",
+            "text_content": long_body,
+        })
+        res_long = call_mcp_tool("lgnn_search_concepts", {"query": "Long Architecture Spec uniquetoken9942", "limit": 3})
+        top_long = next(r for r in res_long["structuredContent"] if r["node_id"] == "mcp_progressive_long")
+        assert top_long["truncated"] is True
+        assert "lgnn_read_node_content" in res_long["content"][0]["text"]
+    finally:
+        current_agent.reset(token)
