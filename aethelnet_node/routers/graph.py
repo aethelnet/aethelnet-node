@@ -7,7 +7,7 @@ import os
 import time
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import httpx
 import torch
 import numpy as np
@@ -42,8 +42,7 @@ class NodeCreate(BaseModel):
     parent_id: Optional[str] = None
     meta_data: Optional[str] = None
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 class NodeUpdate(BaseModel):
     id: str
@@ -62,8 +61,7 @@ class EdgeCreate(BaseModel):
     tags: Optional[List[str]] = []
     is_manual: Optional[bool] = False
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 class EdgeUpdate(BaseModel):
     weight: float

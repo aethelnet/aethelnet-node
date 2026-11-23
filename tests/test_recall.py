@@ -126,6 +126,57 @@ class TestAssociativeRecall(unittest.TestCase):
         claim = top["claims"][0]
         self.assertEqual((claim["relation"], claim["target"], claim["by"]), ("verwahrt_in", "Recall_Hall", "claude"))
 
+    def test_hebbian_decay_demotes_stale_legacy_edges_without_resurrection(self):
+        self._create("Decay_Anchor", "decay_anchor_unique_token router entry", self.claude, "t-dec-init-1")
+        self._create("Decay_Legacy", "deprecated alpha pipeline artifact", self.claude, "t-dec-init-2")
+        self._create("Decay_Modern", "rebuilt zeta streaming handler", self.claude, "t-dec-init-3")
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        a_leg, b_leg = sorted(("Decay_Anchor", "Decay_Legacy"))
+        a_mod, b_mod = sorted(("Decay_Anchor", "Decay_Modern"))
+        cur.execute(
+            """
+            INSERT INTO agent_coaccess_edges (node_a, node_b, weight, last_agent, updated_at)
+            VALUES (?, ?, 40.0, 'claude', datetime('now', '-180 days'))
+            ON CONFLICT(node_a, node_b) DO UPDATE SET
+                weight = 40.0, updated_at = datetime('now', '-180 days')
+            """,
+            (a_leg, b_leg),
+        )
+        cur.execute(
+            """
+            INSERT INTO agent_coaccess_edges (node_a, node_b, weight, last_agent, updated_at)
+            VALUES (?, ?, 5.0, 'claude', CURRENT_TIMESTAMP)
+            ON CONFLICT(node_a, node_b) DO UPDATE SET
+                weight = 5.0, updated_at = CURRENT_TIMESTAMP
+            """,
+            (a_mod, b_mod),
+        )
+        conn.commit()
+        conn.close()
+
+        leg_w = _edge_weight("Decay_Anchor", "Decay_Legacy")
+        mod_w = _edge_weight("Decay_Anchor", "Decay_Modern")
+        self.assertLess(leg_w, mod_w)
+        self.assertAlmostEqual(leg_w, 40.0 * (0.5 ** 6.0), delta=0.05)
+
+        ranked_ids = [r["node_id"] for r in recall("decay_anchor_unique_token", k=5)["results"]]
+        self.assertIn("Decay_Modern", ranked_ids)
+        if "Decay_Legacy" in ranked_ids:
+            self.assertLess(ranked_ids.index("Decay_Modern"), ranked_ids.index("Decay_Legacy"))
+
+        # Touching the stale edge once must add +1.0 to the DECAYED weight (~0.625 -> ~1.625), not resurrect 40.0
+        fb = self.client.post(
+            "/api/lgnn/recall/feedback",
+            json={"node_ids": ["Decay_Anchor", "Decay_Legacy"], "task_id": "t-dec-after-180d"},
+            headers={"Authorization": f"Bearer {self.claude}"},
+        )
+        self.assertEqual(fb.status_code, 200)
+        refreshed_w = _edge_weight("Decay_Anchor", "Decay_Legacy")
+        self.assertGreater(refreshed_w, 1.5)
+        self.assertLess(refreshed_w, 2.0)
+
 
 class TestMcpRoute(unittest.TestCase):
     @classmethod

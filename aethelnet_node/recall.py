@@ -4,9 +4,9 @@ Associative recall for stuck agents (first end-to-end milestone, aethelnet-core/
 Pipeline, chosen by aethelnet-core/research/recall_benchmark:
 1. Hybrid retrieval over node texts: BM25 (code-aware tokens) + MiniLM cosine, fused by reciprocal rank.
    Without sentence-transformers the node only has hash embeddings, so recall falls back to BM25.
-2. Spreading activation: Personalized PageRank from the top hits over "used together" edges
-   (coaccess.py), teleport 0.5. It surfaces nodes that agents needed alongside the hits even when
-   they share no words with the query.
+2. Spreading activation: Personalized PageRank from the top hits over exponentially
+   time-decayed "used together" edges (coaccess.py, 30-day half-life), teleport 0.5. It surfaces
+   nodes that agents needed alongside the hits even when they share no words with the query.
 3. Working-memory dossier: the claims attached to each result (relation, evidence, contested flag,
    author), so an agent sees what is known and what is disputed.
 
